@@ -1,0 +1,11 @@
+# Build output
+/bin/
+/awsm
+
+# Test / coverage artifacts
+coverage.out
+*.test
+
+# OS / editor noise
+.DS_Store
+*.swp
