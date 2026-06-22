@@ -1,5 +1,9 @@
 # awsm — local AWS credentials manager
 
+[![ci](https://github.com/Lukeneo12/awsm/actions/workflows/ci.yml/badge.svg)](https://github.com/Lukeneo12/awsm/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/Lukeneo12/awsm)](https://github.com/Lukeneo12/awsm/releases)
+[![license](https://img.shields.io/github/license/Lukeneo12/awsm)](LICENSE)
+
 `awsm` unifies the three ways you authenticate to AWS — **IAM Identity Center
 (SSO)**, **saml2aws**, and **static access keys** — plus **assume-role** chains,
 into one CLI + TUI. It does not reimplement SSO or SAML; it orchestrates the

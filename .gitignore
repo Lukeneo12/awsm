@@ -9,3 +9,6 @@ coverage.out
 # OS / editor noise
 .DS_Store
 *.swp
+
+# GoReleaser output
+/dist/
