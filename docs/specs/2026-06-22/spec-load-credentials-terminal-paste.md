@@ -19,13 +19,14 @@ the CLI in line with the TUI, which already does paste → preview → `y/n` con
 ## Goals
 
 - `awsm load-credentials <profile>` (alias `load`) reads the credentials block
-  from **stdin** (paste in terminal, end with `Ctrl+D`/EOF) instead of the
-  clipboard.
+  from **stdin** (paste in terminal, end with EOF — `Ctrl+D` on Unix,
+  `Ctrl+Z` then Enter on Windows) instead of the clipboard.
 - Show a **masked preview** before saving — profile, masked access key id,
   region, and whether the block carries a session token (long-term vs
   temporary) — and require confirmation.
-- Confirmation is read from the **controlling terminal (`/dev/tty`)**, not
-  stdin, so it works even when the block is piped in (`awsm load dev < file`).
+- Confirmation is read from the **console** (`/dev/tty` on Unix, `CONIN$` on
+  Windows), not stdin, so it works even when the block is piped in
+  (`awsm load dev < file`). Cross-platform — no new dependencies.
 - Piping support falls out for free: `awsm load dev < creds.txt`.
 - The secret/session token is **never printed**; preview shows only `****last4`
   of the access key id.
@@ -42,13 +43,14 @@ the CLI in line with the TUI, which already does paste → preview → `y/n` con
 
 ## Acceptance criteria
 
-- Running `awsm load-credentials dev` prints a paste prompt to **stderr**, reads
-  the pasted block from stdin until EOF, and parses it with the existing
-  `creds.Parse` (all four formats still supported).
+- Running `awsm load-credentials dev` prints a paste prompt to **stderr** (with
+  the platform-correct EOF key — `Ctrl+D` on Unix, `Ctrl+Z` then Enter on
+  Windows), reads the pasted block from stdin until EOF, and parses it with the
+  existing `creds.Parse` (all four formats still supported).
 - After parsing, a masked preview is shown (profile, `****last4`, region,
   long-term vs temporary). The secret and session token never appear in output.
 - **Interactive** (controlling terminal available, including when the block is
-  piped via `< file`): the user is prompted `Save? [y/N]:` on `/dev/tty`.
+  piped via `< file`): the user is prompted `Save? [y/N]:` on the console.
   - `y`/`yes` (case-insensitive) → `profiles.AddManual` + `SetOverride(manual)`,
     then the existing success line to stderr.
   - anything else → abort, **nothing written**.
@@ -64,14 +66,20 @@ the CLI in line with the TUI, which already does paste → preview → `y/n` con
 ## Approach
 
 - **`internal/prompt`** (new, small, in the style of `internal/runner`):
-  - `Confirm(question string) (bool, error)` — opens the controlling terminal
-    (`/dev/tty`), writes `question + " [y/N]: "`, reads one line, returns true
-    only for `y`/`yes` (case-insensitive). The `/dev/tty` open is the only
-    untestable bit and lives behind a thin seam.
+  - `Confirm(question string) (bool, error)` — opens the console, writes
+    `question + " [y/N]: "`, reads one line, returns true only for `y`/`yes`
+    (case-insensitive). Enter (empty line) → false. Console open is the only
+    untestable bit and lives behind a build-tagged seam.
   - A package-internal `confirm(r io.Reader, w io.Writer, question string)`
     holds the testable logic (prompt + read + interpret); the exported `Confirm`
-    wires it to `/dev/tty`. Returns a sentinel (`ErrNoTTY`) when `/dev/tty`
-    cannot be opened so the caller can apply the non-interactive policy.
+    wires it to the console.
+  - **Console seam** via build tags (no new dependencies):
+    - `console_unix.go` (`//go:build !windows`) opens `/dev/tty` (read+write).
+    - `console_windows.go` (`//go:build windows`) opens `CONIN$` (read) and
+      `CONOUT$` (write) with `os.OpenFile`, which reach the real console even
+      when stdin/stdout are redirected.
+    - Either returns a sentinel (`ErrNoTTY`) when the console cannot be opened
+      (truly headless) so the caller can apply the non-interactive policy.
 - **`cmd/loadcreds.go`**:
   - Read the block from `a.stdin` (new field, defaults `os.Stdin`) via
     `io.ReadAll`, after printing the paste prompt to stderr.
@@ -97,9 +105,12 @@ the CLI in line with the TUI, which already does paste → preview → `y/n` con
   clipboard source break. Mitigated by piping support (`< file`) covering the
   scripted case and a clear new prompt for the interactive case. Documented in
   the README and PR.
-- **`/dev/tty` portability**: not available on Windows. awsm's primary targets
-  are macOS/Linux; on a platform without `/dev/tty` the non-interactive path
-  (auto-confirm) applies, which is safe (still writes 0600, still masks output).
+- **Console portability**: handled per-platform behind a build-tagged seam
+  (`/dev/tty` on Unix, `CONIN$`/`CONOUT$` on Windows), so the interactive path
+  works on all three OSes. The paste-prompt EOF key is platform-specific
+  (`Ctrl+D` / `Ctrl+Z`). If no console can be opened at all (truly headless),
+  the non-interactive path (auto-confirm) applies, which is safe (still writes
+  0600, still masks output).
 - **Auto-confirm in non-interactive mode** could write unintended creds in a
   pipeline. Acceptable: the user explicitly invoked `load <profile>` and piped a
   block; the notice makes it visible. Rollback is a single revert — the parser,
