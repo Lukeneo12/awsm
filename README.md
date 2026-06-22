@@ -138,3 +138,7 @@ make vet      # go vet
 Every external command (`aws`, `saml2aws`) runs through the `runner.CommandRunner`
 interface, so the whole codebase is unit-tested with a fake runner and never
 touches AWS for real.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
