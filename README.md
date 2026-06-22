@@ -12,20 +12,34 @@ into one CLI + TUI. It does not reimplement SSO or SAML; it orchestrates the
 - **Status** — verify each session online via `aws sts get-caller-identity`.
 - **Manage static keys** — add/remove profiles in `~/.aws/credentials`.
 
-## Install
+## Quick start
 
-Requires Go 1.21+, plus `aws` and (for SAML profiles) `saml2aws` on your PATH.
+**Requirements:** Go 1.21+, the `aws` CLI, and (only for SAML profiles) `saml2aws` on your `PATH`.
 
 ```sh
-make install            # builds and installs `awsm` into $GOBIN / $GOPATH/bin
+# 1. Install the binary
+go install github.com/Lukeneo12/awsm@latest
+
+# 2. Make sure Go's bin dir is on your PATH (add this line to ~/.zshrc or ~/.bashrc)
+export PATH="$(go env GOPATH)/bin:$PATH"
+
+# 3. Install the shell wrapper so `awsm switch` can change AWS_PROFILE in your shell
+#    (a child process can't mutate its parent's environment on its own)
+echo 'eval "$(awsm shell-init zsh)"' >> ~/.zshrc    # bash → shell-init bash >> ~/.bashrc; fish → shell-init fish
+exec $SHELL
+
+# 4. Run it
+awsm
 ```
 
-Then install the shell wrapper so `awsm switch` can change `AWS_PROFILE` in your
-current shell (a child process cannot mutate its parent's environment on its own):
+> The module path is case-sensitive — install exactly `github.com/Lukeneo12/awsm@latest`.
+
+### From source
 
 ```sh
-echo 'eval "$(awsm shell-init zsh)"' >> ~/.zshrc   # or: bash / fish
-exec zsh
+git clone git@github.com:Lukeneo12/awsm.git
+cd awsm
+make install        # or: go install .
 ```
 
 ## Usage
