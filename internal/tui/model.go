@@ -13,13 +13,13 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbletea"
 	"github.com/Lukeneo12/awsm/internal/auth"
 	"github.com/Lukeneo12/awsm/internal/creds"
 	"github.com/Lukeneo12/awsm/internal/profiles"
 	"github.com/Lukeneo12/awsm/internal/runner"
 	"github.com/Lukeneo12/awsm/internal/status"
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbletea"
 )
 
 // loadStep tracks the multi-step "load credentials" flow.

@@ -5,9 +5,9 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/Lukeneo12/awsm/internal/profiles"
 	"github.com/Lukeneo12/awsm/internal/status"
+	"github.com/charmbracelet/lipgloss"
 )
 
 var (

@@ -5,10 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/Lukeneo12/awsm/internal/profiles"
 	"github.com/Lukeneo12/awsm/internal/runner"
 	"github.com/Lukeneo12/awsm/internal/status"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func sampleProfiles() []profiles.Profile {
