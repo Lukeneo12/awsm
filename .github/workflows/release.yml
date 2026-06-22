@@ -21,7 +21,7 @@ jobs:
           cache: true
 
       - name: GoReleaser (build cross-platform binaries + publish release)
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
           args: release --clean
