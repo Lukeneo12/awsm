@@ -1,0 +1,7 @@
+[default]
+name = default
+provider = GoogleApps
+mfa = Auto
+aws_profile = base-saml
+role_arn = arn:aws:iam::333333333333:role/DinoCloudRole
+region = us-east-1

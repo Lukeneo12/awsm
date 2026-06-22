@@ -1,0 +1,18 @@
+[profile sso-dev]
+sso_session = my-sso
+sso_account_id = 111111111111
+sso_role_name = AdministratorAccess
+region = us-east-1
+
+[sso-session my-sso]
+sso_start_url = https://example.awsapps.com/start
+sso_region = us-east-1
+
+[profile role-prod]
+role_arn = arn:aws:iam::222222222222:role/DinoCloudRole
+source_profile = base-saml
+region = us-west-2
+
+[profile legacy-sso]
+sso_start_url = https://legacy.awsapps.com/start
+region = eu-west-1
