@@ -57,26 +57,32 @@ awsm switch dev      # make `dev` active in this shell (needs the wrapper)
 awsm login dev       # authenticate `dev` (SSO/SAML dispatched automatically)
 awsm add client-x    # interactive wizard: manual | sso | saml | role
 awsm add client-x --type manual   # skip the type prompt
-awsm load-credentials dev         # paste-from-clipboard loader (alias: load)
+awsm load-credentials dev         # paste-in-terminal loader (alias: load)
 awsm set-type lucas-d-personal manual     # pin a profile's type (fix misclassification)
 awsm set-type lucas-d-personal --clear    # back to auto-detection
 awsm rm client-x     # forget a profile (credentials + config + override)
 ```
 
-### Loading credentials from the clipboard
+### Loading credentials by pasting them
 
 When AWS hands you a credentials block (the SSO portal's "Command line or
-programmatic access", `aws configure export-credentials`, etc.), copy it and run:
+programmatic access", `aws configure export-credentials`, etc.), run:
 
 ```sh
 awsm load-credentials dev
 ```
 
-`awsm` reads the clipboard, auto-detects the format — `export AWS_...`, an ini
+`awsm` prompts you to paste the block, ending with `Ctrl+D` (`Ctrl+Z` then Enter
+on Windows). It auto-detects the format — `export AWS_...`, an ini
 `aws_access_key_id=...` block, PowerShell `$env:AWS_...`, or cmd `set AWS_...` —
-and stores the access key, secret, optional session token and region into the
-profile (mode `0600`, pinned as `manual`). The secret is never printed. Reads the
-clipboard via `pbpaste` (macOS) or `wl-paste`/`xclip`/`xsel` (Linux).
+shows a masked preview (profile, masked key, region, whether it carries a session
+token), and on `y` stores the access key, secret, optional session token and
+region into the profile (mode `0600`, pinned as `manual`). The secret is never
+printed. You can also pipe the block in:
+
+```sh
+awsm load-credentials dev < creds.txt
+```
 
 ### Adding profiles
 
