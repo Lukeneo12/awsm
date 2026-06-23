@@ -26,7 +26,9 @@ func (a *app) loadCredsCmd() *cobra.Command {
 			profile := args[0]
 
 			stderrf("Paste the AWS credentials block, then press %s:\n", prompt.EOFKey)
-			raw, err := io.ReadAll(cmd.InOrStdin())
+			// Bound the read: a pasted credentials block is a few hundred bytes;
+			// 1 MiB is generous and guards against a runaway pipe.
+			raw, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), 1<<20))
 			if err != nil {
 				return fmt.Errorf("reading pasted credentials: %w", err)
 			}

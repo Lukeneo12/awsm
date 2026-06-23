@@ -81,19 +81,20 @@ the CLI in line with the TUI, which already does paste → preview → `y/n` con
     - Either returns a sentinel (`ErrNoTTY`) when the console cannot be opened
       (truly headless) so the caller can apply the non-interactive policy.
 - **`cmd/loadcreds.go`**:
-  - Read the block from `a.stdin` (new field, defaults `os.Stdin`) via
-    `io.ReadAll`, after printing the paste prompt to stderr.
+  - Read the block from `cmd.InOrStdin()` (cobra's stdin seam, set in tests via
+    `cmd.SetIn`) via `io.ReadAll`, bounded by an `io.LimitReader`, after printing
+    the paste prompt to stderr.
   - `creds.Parse` (unchanged) → on error, the existing friendly message.
   - Build the masked preview from the parsed fields and print to stderr.
-  - Confirm via `a.confirm` (new field, defaults to a fn calling
-    `prompt.Confirm`). On `ErrNoTTY`, auto-confirm and print the non-interactive
-    notice. On `false`, abort without writing.
+  - Confirm via `a.confirm` (new field, defaults to `prompt.Confirm`). On
+    `ErrNoTTY`, auto-confirm and print the non-interactive notice. On `false`,
+    abort without writing.
   - On confirm: `profiles.AddManual` + `SetOverride(type=manual)` + success line
     (all unchanged).
-- **`cmd/root.go`**: extend `app` with `stdin io.Reader` and
-  `confirm func(question string) (bool, error)`; `newApp` defaults them to
-  `os.Stdin` and the `prompt.Confirm` wrapper. This mirrors how `runner` is
-  injected for testability.
+- **`cmd/root.go`**: extend `app` with `confirm func(question string) (bool, error)`;
+  `newApp` defaults it to `prompt.Confirm`. This mirrors how `runner` is injected
+  for testability. (The paste block uses cobra's existing `cmd.InOrStdin()` seam,
+  so no separate stdin field is needed.)
 - **Delete** `internal/clipboard/clipboard.go` + `clipboard_test.go`.
 - **README**: rewrite the "Loading credentials from the clipboard" section to
   describe paste-in-terminal + `Ctrl+D` + confirm, mention piping, and drop the
