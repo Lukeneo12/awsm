@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -69,7 +70,7 @@ func (a *app) addManual(w *wizard, profile string) error {
 		return err
 	}
 	_ = profiles.SetOverride(a.paths.Overrides, profile, profiles.Override{Type: profiles.TypeManual})
-	stderrf("stored profile %q (manual, key ****%s) [mode 0600]\n", profile, last4(in.AccessKeyID))
+	w.errf("stored profile %q (manual, key ****%s) [mode 0600]\n", profile, last4(in.AccessKeyID))
 	return nil
 }
 
@@ -85,7 +86,7 @@ func (a *app) addSSO(w *wizard, profile string) error {
 	if err := profiles.AddSSO(a.paths.Config, profile, in); err != nil {
 		return err
 	}
-	stderrf("stored SSO profile %q (session %q)\n", profile, in.SessionName)
+	w.errf("stored SSO profile %q (session %q)\n", profile, in.SessionName)
 	return nil
 }
 
@@ -104,7 +105,7 @@ func (a *app) addSAML(w *wizard, profile string) error {
 	}
 	_ = profiles.SetOverride(a.paths.Overrides, in.AWSProfile,
 		profiles.Override{Type: profiles.TypeSAML, Account: in.Account})
-	stderrf("stored saml2aws account %q -> profile %q\n", in.Account, in.AWSProfile)
+	w.errf("stored saml2aws account %q -> profile %q\n", in.Account, in.AWSProfile)
 	return nil
 }
 
@@ -117,26 +118,33 @@ func (a *app) addRole(w *wizard, profile string) error {
 	if err := profiles.AddRole(a.paths.Config, profile, in); err != nil {
 		return err
 	}
-	stderrf("stored assume-role profile %q (source %q)\n", profile, in.SourceProfile)
+	w.errf("stored assume-role profile %q (source %q)\n", profile, in.SourceProfile)
 	return nil
 }
 
 // wizard reads prompted fields from the command's stdin (or hidden TTY input
-// for secrets), printing prompts to stderr so evaluable stdout stays clean.
+// for secrets), printing prompts to the command's stderr so evaluable stdout
+// stays clean.
 type wizard struct {
-	in *bufio.Reader
+	in   *bufio.Reader
+	errw io.Writer
 }
 
 func newWizard(cmd *cobra.Command) *wizard {
-	return &wizard{in: bufio.NewReader(cmd.InOrStdin())}
+	return &wizard{in: bufio.NewReader(cmd.InOrStdin()), errw: cmd.ErrOrStderr()}
+}
+
+// errf prints to the command's stderr so it never pollutes evaluable stdout.
+func (w *wizard) errf(format string, args ...any) {
+	fmt.Fprintf(w.errw, format, args...)
 }
 
 // ask prompts for a value, returning def when the user enters nothing.
 func (w *wizard) ask(_, prompt, def string) string {
 	if def != "" {
-		stderrf("%s [%s]: ", prompt, def)
+		w.errf("%s [%s]: ", prompt, def)
 	} else {
-		stderrf("%s: ", prompt)
+		w.errf("%s: ", prompt)
 	}
 	line, _ := w.in.ReadString('\n')
 	v := strings.TrimSpace(line)
@@ -148,10 +156,10 @@ func (w *wizard) ask(_, prompt, def string) string {
 
 // secret reads a value without echo when on a TTY, else from the wizard reader.
 func (w *wizard) secret(prompt string) string {
-	stderrf("%s: ", prompt)
+	w.errf("%s: ", prompt)
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		b, _ := term.ReadPassword(int(os.Stdin.Fd()))
-		stderrf("\n")
+		w.errf("\n")
 		return strings.TrimSpace(string(b))
 	}
 	line, _ := w.in.ReadString('\n')

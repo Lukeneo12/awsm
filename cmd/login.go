@@ -25,16 +25,16 @@ func (a *app) loginCmd() *cobra.Command {
 
 			plan := auth.PlanFor(p)
 			if plan.NoOp {
-				stderrf("%s: %s\n", p.Name, plan.Note)
+				cmd.PrintErrf("%s: %s\n", p.Name, plan.Note)
 				return nil
 			}
-			stderrf("logging in %s via %s...\n", p.Name, plan.Binary)
+			cmd.PrintErrf("logging in %s via %s...\n", p.Name, plan.Binary)
 
 			authn := auth.New(a.runner)
 			if err := authn.Login(cmd.Context(), p, list); err != nil {
 				return err
 			}
-			stderrf("done\n")
+			cmd.PrintErrf("done\n")
 			return nil
 		},
 	}

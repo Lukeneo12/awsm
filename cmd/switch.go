@@ -32,7 +32,7 @@ func (a *app) switchCmd() *cobra.Command {
 				shellName = detectShell()
 			}
 			fmt.Fprint(cmd.OutOrStdout(), shell.ExportSnippet(p, shellName))
-			stderrf("switched to %s\n", p.Name)
+			cmd.PrintErrf("switched to %s\n", p.Name)
 			return nil
 		},
 	}

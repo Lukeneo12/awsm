@@ -27,7 +27,7 @@ func (a *app) setTypeCmd() *cobra.Command {
 				if err := profiles.SetOverride(a.paths.Overrides, profile, profiles.Override{}); err != nil {
 					return err
 				}
-				stderrf("cleared type override for %q\n", profile)
+				cmd.PrintErrf("cleared type override for %q\n", profile)
 				return nil
 			}
 
@@ -35,7 +35,7 @@ func (a *app) setTypeCmd() *cobra.Command {
 			if len(args) == 2 {
 				t = profiles.Type(strings.ToLower(strings.TrimSpace(args[1])))
 			} else {
-				stderrf("type for %q [manual/sso/saml/role]: ", profile)
+				cmd.PrintErrf("type for %q [manual/sso/saml/role]: ", profile)
 				line, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
 				t = profiles.Type(strings.ToLower(strings.TrimSpace(line)))
 			}
@@ -45,7 +45,7 @@ func (a *app) setTypeCmd() *cobra.Command {
 			if err := profiles.SetOverride(a.paths.Overrides, profile, profiles.Override{Type: t, Account: account}); err != nil {
 				return err
 			}
-			stderrf("pinned %q as %q\n", profile, t)
+			cmd.PrintErrf("pinned %q as %q\n", profile, t)
 			return nil
 		},
 	}

@@ -19,7 +19,7 @@ func (a *app) listCmd() *cobra.Command {
 				return err
 			}
 			if len(list) == 0 {
-				stderrf("No profiles found in %s or %s\n", a.paths.Config, a.paths.Credentials)
+				cmd.PrintErrf("No profiles found in %s or %s\n", a.paths.Config, a.paths.Credentials)
 				return nil
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
