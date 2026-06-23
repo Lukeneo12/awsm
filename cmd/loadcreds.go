@@ -25,7 +25,7 @@ func (a *app) loadCredsCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			profile := args[0]
 
-			stderrf("Paste the AWS credentials block, then press %s:\n", prompt.EOFKey)
+			cmd.PrintErrf("Paste the AWS credentials block, then press %s:\n", prompt.EOFKey)
 			// Bound the read: a pasted credentials block is a few hundred bytes;
 			// 1 MiB is generous and guards against a runaway pipe.
 			raw, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), 1<<20))
@@ -45,21 +45,21 @@ func (a *app) loadCredsCmd() *cobra.Command {
 			if region == "" {
 				region = "(none)"
 			}
-			stderrf("About to load into %q:\n", profile)
-			stderrf("  key:    ****%s\n", last4(parsed.AccessKeyID))
-			stderrf("  region: %s\n", region)
-			stderrf("  type:   %s\n", kind)
+			cmd.PrintErrf("About to load into %q:\n", profile)
+			cmd.PrintErrf("  key:    ****%s\n", last4(parsed.AccessKeyID))
+			cmd.PrintErrf("  region: %s\n", region)
+			cmd.PrintErrf("  type:   %s\n", kind)
 
 			ok, err := a.confirm("Save?")
 			switch {
 			case errors.Is(err, prompt.ErrNoTTY):
-				stderrf("non-interactive: saved without confirmation\n")
+				cmd.PrintErrf("non-interactive: saved without confirmation\n")
 				ok = true
 			case err != nil:
 				return err
 			}
 			if !ok {
-				stderrf("aborted, nothing written\n")
+				cmd.PrintErrf("aborted, nothing written\n")
 				return nil
 			}
 
@@ -74,7 +74,7 @@ func (a *app) loadCredsCmd() *cobra.Command {
 			}
 			_ = profiles.SetOverride(a.paths.Overrides, profile, profiles.Override{Type: profiles.TypeManual})
 
-			stderrf("loaded %s credentials into %q (key ****%s) [mode 0600]\n",
+			cmd.PrintErrf("loaded %s credentials into %q (key ****%s) [mode 0600]\n",
 				kind, profile, last4(parsed.AccessKeyID))
 			return nil
 		},

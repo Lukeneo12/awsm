@@ -407,6 +407,37 @@ func TestLoadCredsCmd_bad_content_errors(t *testing.T) {
 	}
 }
 
+// The two security invariants the command promises: the secret/session token is
+// never printed (only ****last4 of the access key id), and stdout stays
+// eval-safe (every diagnostic goes to stderr). Both are captured via cobra's
+// output seams so a future regression turns this test red.
+func TestLoadCredsCmd_does_not_leak_secret(t *testing.T) {
+	a := loadApp(t, func(string) (bool, error) { return true, nil })
+	c := a.loadCredsCmd()
+	var errBuf, outBuf bytes.Buffer
+	c.SetErr(&errBuf)
+	c.SetOut(&outBuf)
+	c.SetIn(strings.NewReader(
+		"export AWS_ACCESS_KEY_ID=\"ASIAEXAMPLE9999\"\n" +
+			"export AWS_SECRET_ACCESS_KEY=\"thesecret\"\n" +
+			"export AWS_SESSION_TOKEN=\"thetoken\"\n" +
+			"export AWS_DEFAULT_REGION=\"us-east-1\"\n"))
+	c.SetArgs([]string{"dino-dev"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+	errOut := errBuf.String()
+	if strings.Contains(errOut, "thesecret") || strings.Contains(errOut, "thetoken") {
+		t.Errorf("secret/session token leaked to stderr: %q", errOut)
+	}
+	if !strings.Contains(errOut, "****9999") {
+		t.Errorf("masked key preview missing from stderr: %q", errOut)
+	}
+	if outBuf.Len() != 0 {
+		t.Errorf("stdout must stay eval-safe (empty), got %q", outBuf.String())
+	}
+}
+
 func TestShellInitCmd_emits_wrapper(t *testing.T) {
 	a := testApp(runner.NewFake())
 	c := a.shellInitCmd()

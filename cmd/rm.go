@@ -35,9 +35,9 @@ func (a *app) rmCmd() *cobra.Command {
 			}
 
 			if existed {
-				stderrf("forgot %q (was %s) — removed from credentials & config, override cleared\n", profile, p.Type)
+				cmd.PrintErrf("forgot %q (was %s) — removed from credentials & config, override cleared\n", profile, p.Type)
 			} else {
-				stderrf("nothing to remove for %q\n", profile)
+				cmd.PrintErrf("nothing to remove for %q\n", profile)
 			}
 			return nil
 		},

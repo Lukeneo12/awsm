@@ -4,7 +4,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/Lukeneo12/awsm/internal/profiles"
 	"github.com/Lukeneo12/awsm/internal/prompt"
@@ -72,9 +71,4 @@ func (a *app) loadProfiles() ([]profiles.Profile, error) {
 		return nil, fmt.Errorf("reading AWS config: %w", err)
 	}
 	return list, nil
-}
-
-// stderrf prints to stderr so it never pollutes evaluable stdout.
-func stderrf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, format, args...)
 }
