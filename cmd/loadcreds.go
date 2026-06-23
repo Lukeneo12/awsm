@@ -27,10 +27,16 @@ func (a *app) loadCredsCmd() *cobra.Command {
 
 			cmd.PrintErrf("Paste the AWS credentials block, then press %s:\n", prompt.EOFKey)
 			// Bound the read: a pasted credentials block is a few hundred bytes;
-			// 1 MiB is generous and guards against a runaway pipe.
-			raw, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), 1<<20))
+			// 1 MiB is generous. Read one byte past the cap so we can tell a
+			// runaway pipe apart from a legitimately-sized block and fail loudly
+			// instead of silently parsing a truncated input.
+			const maxCreds = 1 << 20
+			raw, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), maxCreds+1))
 			if err != nil {
 				return fmt.Errorf("reading pasted credentials: %w", err)
+			}
+			if len(raw) > maxCreds {
+				return fmt.Errorf("pasted input exceeds %d bytes; refusing to parse a possibly truncated block", maxCreds)
 			}
 			parsed, err := creds.Parse(string(raw))
 			if err != nil {
@@ -50,7 +56,14 @@ func (a *app) loadCredsCmd() *cobra.Command {
 			cmd.PrintErrf("  region: %s\n", region)
 			cmd.PrintErrf("  type:   %s\n", kind)
 
-			ok, err := a.confirm("Save?")
+			// app is always built via newApp (or the tests), which wire confirm.
+			// Guard anyway so a hand-built app degrades to the real console
+			// prompt instead of panicking on a nil call.
+			confirm := a.confirm
+			if confirm == nil {
+				confirm = prompt.Confirm
+			}
+			ok, err := confirm("Save?")
 			switch {
 			case errors.Is(err, prompt.ErrNoTTY):
 				cmd.PrintErrf("non-interactive: saved without confirmation\n")

@@ -438,6 +438,25 @@ func TestLoadCredsCmd_does_not_leak_secret(t *testing.T) {
 	}
 }
 
+// A runaway pipe must fail loudly rather than be silently truncated and parsed.
+func TestLoadCredsCmd_rejects_oversized_input(t *testing.T) {
+	a := loadApp(t, func(string) (bool, error) { return true, nil })
+	c := a.loadCredsCmd()
+	// A valid-looking prefix followed by enough padding to blow past the 1 MiB
+	// cap; the size guard must fire before we ever parse or write.
+	big := "export AWS_ACCESS_KEY_ID=AKIA1234\nexport AWS_SECRET_ACCESS_KEY=s\n" +
+		strings.Repeat("#", 1<<20)
+	c.SetIn(strings.NewReader(big))
+	c.SetArgs([]string{"too-big"})
+	if err := c.Execute(); err == nil {
+		t.Fatal("expected error for oversized input")
+	}
+	list, _ := profiles.List(a.paths)
+	if _, ok := profiles.Find(list, "too-big"); ok {
+		t.Error("oversized input must not write a profile")
+	}
+}
+
 func TestShellInitCmd_emits_wrapper(t *testing.T) {
 	a := testApp(runner.NewFake())
 	c := a.shellInitCmd()
