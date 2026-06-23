@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"io"
 
-	"github.com/Lukeneo12/awsm/internal/clipboard"
 	"github.com/Lukeneo12/awsm/internal/creds"
 	"github.com/Lukeneo12/awsm/internal/profiles"
+	"github.com/Lukeneo12/awsm/internal/prompt"
 	"github.com/spf13/cobra"
 )
 
@@ -13,23 +15,50 @@ func (a *app) loadCredsCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "load-credentials <profile>",
 		Aliases: []string{"load"},
-		Short:   "Load manual credentials for a profile from the clipboard",
-		Long: "load-credentials reads the clipboard, auto-detects the format (export, ini,\n" +
-			"PowerShell or cmd) and stores the credentials into the profile in\n" +
-			"~/.aws/credentials (mode 0600), pinning its type as manual. Paste the block\n" +
-			"AWS gives you (e.g. the SSO portal) first, then run this. The secret is never\n" +
-			"printed.",
+		Short:   "Load manual credentials for a profile by pasting them in the terminal",
+		Long: "load-credentials reads an AWS credentials block from stdin, auto-detects the\n" +
+			"format (export, ini, PowerShell or cmd), shows a masked preview and stores it\n" +
+			"into the profile in ~/.aws/credentials (mode 0600), pinning its type as manual.\n" +
+			"Paste the block AWS gives you, then press " + prompt.EOFKey + ". You can also pipe\n" +
+			"it in: awsm load <profile> < creds.txt. The secret is never printed.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			profile := args[0]
 
-			text, err := clipboard.Read(a.runner)
+			stderrf("Paste the AWS credentials block, then press %s:\n", prompt.EOFKey)
+			raw, err := io.ReadAll(cmd.InOrStdin())
 			if err != nil {
+				return fmt.Errorf("reading pasted credentials: %w", err)
+			}
+			parsed, err := creds.Parse(string(raw))
+			if err != nil {
+				return fmt.Errorf("%w (paste an AWS credentials block, then press %s)", err, prompt.EOFKey)
+			}
+
+			kind := "long-term"
+			if parsed.SessionToken != "" {
+				kind = "temporary"
+			}
+			region := parsed.Region
+			if region == "" {
+				region = "(none)"
+			}
+			stderrf("About to load into %q:\n", profile)
+			stderrf("  key:    ****%s\n", last4(parsed.AccessKeyID))
+			stderrf("  region: %s\n", region)
+			stderrf("  type:   %s\n", kind)
+
+			ok, err := a.confirm("Save?")
+			switch {
+			case errors.Is(err, prompt.ErrNoTTY):
+				stderrf("non-interactive: saved without confirmation\n")
+				ok = true
+			case err != nil:
 				return err
 			}
-			parsed, err := creds.Parse(text)
-			if err != nil {
-				return fmt.Errorf("%w (copy an AWS credentials block to the clipboard first)", err)
+			if !ok {
+				stderrf("aborted, nothing written\n")
+				return nil
 			}
 
 			in := profiles.ManualInput{
@@ -43,10 +72,6 @@ func (a *app) loadCredsCmd() *cobra.Command {
 			}
 			_ = profiles.SetOverride(a.paths.Overrides, profile, profiles.Override{Type: profiles.TypeManual})
 
-			kind := "long-term"
-			if parsed.SessionToken != "" {
-				kind = "temporary"
-			}
 			stderrf("loaded %s credentials into %q (key ****%s) [mode 0600]\n",
 				kind, profile, last4(parsed.AccessKeyID))
 			return nil

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Lukeneo12/awsm/internal/profiles"
+	"github.com/Lukeneo12/awsm/internal/prompt"
 	"github.com/Lukeneo12/awsm/internal/runner"
 )
 
@@ -330,32 +331,32 @@ func TestLoginCmd_unknown_profile_errors(t *testing.T) {
 	}
 }
 
-func TestLoadCredsCmd_from_clipboard(t *testing.T) {
+func loadApp(t *testing.T, confirm func(string) (bool, error)) *app {
+	t.Helper()
 	dir := t.TempDir()
-	f := runner.NewFake()
-	f.Responses["pbpaste"] = runner.Result{Stdout: []byte(
-		"export AWS_ACCESS_KEY_ID=\"ASIAEXAMPLE9999\"\n" +
-			"export AWS_SECRET_ACCESS_KEY=\"thesecret\"\n" +
-			"export AWS_SESSION_TOKEN=\"thetoken\"\n" +
-			"export AWS_DEFAULT_REGION=\"us-east-1\"\n")}
-	// Force the darwin path deterministically by also answering linux tools.
-	f.Responses["xclip -selection clipboard -o"] = f.Responses["pbpaste"]
-	f.Responses["wl-paste"] = f.Responses["pbpaste"]
-
-	a := &app{
+	return &app{
 		paths: profiles.Paths{
 			Credentials: filepath.Join(dir, "credentials"),
 			Config:      filepath.Join(dir, "config"),
 			Overrides:   filepath.Join(dir, "profiles.ini"),
 		},
-		runner: f,
+		runner:  runner.NewFake(),
+		confirm: confirm,
 	}
+}
+
+func TestLoadCredsCmd_confirm_saves(t *testing.T) {
+	a := loadApp(t, func(string) (bool, error) { return true, nil })
 	c := a.loadCredsCmd()
+	c.SetIn(strings.NewReader(
+		"export AWS_ACCESS_KEY_ID=\"ASIAEXAMPLE9999\"\n" +
+			"export AWS_SECRET_ACCESS_KEY=\"thesecret\"\n" +
+			"export AWS_SESSION_TOKEN=\"thetoken\"\n" +
+			"export AWS_DEFAULT_REGION=\"us-east-1\"\n"))
 	c.SetArgs([]string{"dino-dev"})
 	if err := c.Execute(); err != nil {
-		t.Fatalf("load-credentials error: %v", err)
+		t.Fatalf("load error: %v", err)
 	}
-
 	list, _ := profiles.List(a.paths)
 	p, ok := profiles.Find(list, "dino-dev")
 	if !ok || p.Type != profiles.TypeManual {
@@ -366,18 +367,43 @@ func TestLoadCredsCmd_from_clipboard(t *testing.T) {
 	}
 }
 
-func TestLoadCredsCmd_bad_clipboard_content(t *testing.T) {
-	dir := t.TempDir()
-	f := runner.NewFake()
-	f.DefaultResult = runner.Result{Stdout: []byte("not credentials at all")}
-	a := &app{
-		paths:  profiles.Paths{Credentials: filepath.Join(dir, "credentials")},
-		runner: f,
-	}
+func TestLoadCredsCmd_decline_writes_nothing(t *testing.T) {
+	a := loadApp(t, func(string) (bool, error) { return false, nil })
 	c := a.loadCredsCmd()
+	c.SetIn(strings.NewReader(
+		"export AWS_ACCESS_KEY_ID=ASIA9999\nexport AWS_SECRET_ACCESS_KEY=s\n"))
+	c.SetArgs([]string{"dino-dev"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+	list, _ := profiles.List(a.paths)
+	if _, ok := profiles.Find(list, "dino-dev"); ok {
+		t.Error("declining should write nothing")
+	}
+}
+
+func TestLoadCredsCmd_non_interactive_auto_confirms(t *testing.T) {
+	a := loadApp(t, func(string) (bool, error) { return false, prompt.ErrNoTTY })
+	c := a.loadCredsCmd()
+	c.SetIn(strings.NewReader(
+		"export AWS_ACCESS_KEY_ID=AKIA1234\nexport AWS_SECRET_ACCESS_KEY=s\n"))
+	c.SetArgs([]string{"ci-prof"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+	list, _ := profiles.List(a.paths)
+	if p, ok := profiles.Find(list, "ci-prof"); !ok || p.Type != profiles.TypeManual {
+		t.Fatalf("non-interactive run should save, got ok=%v", ok)
+	}
+}
+
+func TestLoadCredsCmd_bad_content_errors(t *testing.T) {
+	a := loadApp(t, func(string) (bool, error) { return true, nil })
+	c := a.loadCredsCmd()
+	c.SetIn(strings.NewReader("not credentials at all"))
 	c.SetArgs([]string{"x"})
 	if err := c.Execute(); err == nil {
-		t.Error("expected error when clipboard has no credentials")
+		t.Error("expected error when input has no credentials")
 	}
 }
 

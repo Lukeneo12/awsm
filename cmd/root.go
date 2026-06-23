@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/Lukeneo12/awsm/internal/profiles"
+	"github.com/Lukeneo12/awsm/internal/prompt"
 	"github.com/Lukeneo12/awsm/internal/runner"
 	"github.com/Lukeneo12/awsm/internal/tui"
 	"github.com/spf13/cobra"
@@ -14,12 +15,17 @@ import (
 
 // app holds shared dependencies for the commands.
 type app struct {
-	paths  profiles.Paths
-	runner runner.CommandRunner
+	paths   profiles.Paths
+	runner  runner.CommandRunner
+	confirm func(question string) (bool, error)
 }
 
 func newApp() *app {
-	return &app{paths: profiles.DefaultPaths(), runner: runner.New()}
+	return &app{
+		paths:   profiles.DefaultPaths(),
+		runner:  runner.New(),
+		confirm: prompt.Confirm,
+	}
 }
 
 // Execute builds the command tree and runs it.
