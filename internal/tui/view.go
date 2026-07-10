@@ -25,6 +25,11 @@ var (
 )
 
 func (m *model) View() string {
+	// The delete-confirm prompt takes over the whole screen, ahead of the load
+	// flow's own steps.
+	if m.deleteTarget != "" {
+		return m.deleteConfirmView()
+	}
 	// The load flow takes over the whole screen.
 	switch m.loadStep {
 	case loadPaste:
@@ -71,7 +76,24 @@ func (m *model) View() string {
 		b.WriteString(dimStyle.Render(m.message) + "\n")
 	}
 	b.WriteString(helpStyle.Render(
-		"↑/↓ move · enter login · s switch · a add · l load · t set-type · r refresh · / filter · q quit"))
+		"↑/↓ move · enter login · s switch · a add · l load · t set-type · d delete · r refresh · / filter · q quit"))
+	return b.String()
+}
+
+// deleteConfirmView asks the user to confirm removing the pending delete
+// target, mirroring confirmView's layout for the load flow.
+func (m *model) deleteConfirmView() string {
+	name := m.deleteTarget
+	profileType := "?"
+	if p, ok := profiles.Find(m.profiles, name); ok {
+		profileType = string(p.Type)
+	}
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Delete profile → "+name) + "\n\n")
+	b.WriteString(fmt.Sprintf("  type:            %s\n\n", profileType))
+	b.WriteString(dimStyle.Render("  this removes the profile from credentials & config and clears its override") + "\n\n")
+	b.WriteString(promptStyle.Render(fmt.Sprintf("Delete %s? [y/n]", name)) + "\n")
+	b.WriteString(helpStyle.Render("y confirm · n / esc cancel"))
 	return b.String()
 }
 

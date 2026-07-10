@@ -346,6 +346,214 @@ func TestReload_refreshes_from_paths(t *testing.T) {
 	}
 }
 
+func newDeletePaths(dir string) profiles.Paths {
+	return profiles.Paths{
+		Credentials: filepath.Join(dir, "credentials"),
+		Config:      filepath.Join(dir, "config"),
+		Overrides:   filepath.Join(dir, "profiles.ini"),
+	}
+}
+
+// seedManualProfile writes a manual profile + override into fixture files so a
+// delete test has something real to remove.
+func seedManualProfile(t *testing.T, paths profiles.Paths, name string) {
+	t.Helper()
+	in := profiles.ManualInput{AccessKeyID: "AKIASEED0001", Secret: "sekret", Region: "us-east-1"}
+	if err := profiles.AddManual(paths.Credentials, paths.Config, name, in); err != nil {
+		t.Fatalf("seed AddManual: %v", err)
+	}
+	if err := profiles.SetOverride(paths.Overrides, name, profiles.Override{Type: profiles.TypeManual}); err != nil {
+		t.Fatalf("seed SetOverride: %v", err)
+	}
+}
+
+func TestUpdate_d_shows_delete_confirm(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.cursor = 1 // beta
+	m.Update(key("d"))
+	if m.deleteTarget != "beta" {
+		t.Fatalf("expected deleteTarget beta, got %q", m.deleteTarget)
+	}
+	if !contains(m.View(), "Delete profile") {
+		t.Error("expected the delete confirm screen to render")
+	}
+}
+
+func TestUpdate_d_on_empty_list_is_noop(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.filter = "zzz-no-match"
+	m.applyFilter()
+	if len(m.filtered) != 0 {
+		t.Fatalf("expected empty filtered list, got %d", len(m.filtered))
+	}
+	_, cmd := m.Update(key("d"))
+	if cmd != nil {
+		t.Error("expected no command when list is empty")
+	}
+	if m.deleteTarget != "" {
+		t.Errorf("expected no pending delete, got %q", m.deleteTarget)
+	}
+}
+
+func TestDeleteConfirm_y_removes_profile_and_reloads(t *testing.T) {
+	dir := t.TempDir()
+	paths := newDeletePaths(dir)
+	seedManualProfile(t, paths, "beta")
+	seedManualProfile(t, paths, "alpha") // survives, so reload has something to check
+
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.paths = paths
+	m.deleteTarget = "beta"
+
+	_, cmd := m.Update(key("y"))
+	if m.deleteTarget != "" {
+		t.Error("deleteTarget should be cleared after confirm")
+	}
+	if !contains(m.message, "deleted") {
+		t.Errorf("expected a success message, got %q", m.message)
+	}
+	if cmd == nil {
+		t.Fatal("expected a reload command after a successful delete")
+	}
+	if _, ok := profiles.Find(m.profiles, "beta"); ok {
+		t.Error("expected beta to be gone from the reloaded profile list")
+	}
+
+	credData, err := os.ReadFile(paths.Credentials)
+	if err != nil {
+		t.Fatalf("reading credentials fixture: %v", err)
+	}
+	if contains(string(credData), "beta") {
+		t.Error("expected the beta section to be removed from credentials")
+	}
+	configData, err := os.ReadFile(paths.Config)
+	if err != nil {
+		t.Fatalf("reading config fixture: %v", err)
+	}
+	if contains(string(configData), "beta") {
+		t.Error("expected the beta section to be removed from config")
+	}
+	overrides, err := profiles.LoadOverrides(paths.Overrides)
+	if err != nil {
+		t.Fatalf("reading overrides fixture: %v", err)
+	}
+	if _, ok := overrides["beta"]; ok {
+		t.Error("expected the beta override to be cleared")
+	}
+}
+
+func TestDeleteConfirm_y_keeps_credentials_file_mode_0600(t *testing.T) {
+	dir := t.TempDir()
+	paths := newDeletePaths(dir)
+	seedManualProfile(t, paths, "beta")
+
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.paths = paths
+	m.deleteTarget = "beta"
+	m.Update(key("y"))
+
+	info, err := os.Stat(paths.Credentials)
+	if err != nil {
+		t.Fatalf("stat credentials: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("credentials file mode: got %o want 0600", info.Mode().Perm())
+	}
+}
+
+func TestDeleteConfirm_n_cancels_without_deleting(t *testing.T) {
+	dir := t.TempDir()
+	paths := newDeletePaths(dir)
+	seedManualProfile(t, paths, "beta")
+
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.paths = paths
+	m.deleteTarget = "beta"
+
+	_, cmd := m.Update(key("n"))
+	if cmd != nil {
+		t.Error("expected no command on cancel")
+	}
+	if m.deleteTarget != "" {
+		t.Error("deleteTarget should be cleared on cancel")
+	}
+	if !contains(m.message, "cancel") {
+		t.Errorf("expected a cancelled message, got %q", m.message)
+	}
+	credData, _ := os.ReadFile(paths.Credentials)
+	if !contains(string(credData), "beta") {
+		t.Error("beta section should still exist in credentials after cancel")
+	}
+}
+
+func TestDeleteConfirm_esc_cancels_without_deleting(t *testing.T) {
+	dir := t.TempDir()
+	paths := newDeletePaths(dir)
+	seedManualProfile(t, paths, "beta")
+
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.paths = paths
+	m.deleteTarget = "beta"
+
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.deleteTarget != "" {
+		t.Error("deleteTarget should be cleared on esc")
+	}
+	credData, _ := os.ReadFile(paths.Credentials)
+	if !contains(string(credData), "beta") {
+		t.Error("beta section should still exist in credentials after esc")
+	}
+}
+
+func TestDeleteConfirm_other_key_cancels(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.deleteTarget = "beta"
+	m.Update(key("x"))
+	if m.deleteTarget != "" {
+		t.Error("deleteTarget should be cleared on any non-y key")
+	}
+	if !contains(m.message, "cancel") {
+		t.Errorf("expected a cancelled message, got %q", m.message)
+	}
+}
+
+func TestDeleteConfirm_error_shows_message_and_keeps_running(t *testing.T) {
+	dir := t.TempDir()
+	paths := newDeletePaths(dir)
+	// Make Credentials an invalid path: a directory instead of a file, so
+	// RemoveProfile's ini.LoadSources call fails.
+	if err := os.Mkdir(paths.Credentials, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.paths = paths
+	m.deleteTarget = "beta"
+
+	_, cmd := m.Update(key("y"))
+	if cmd != nil {
+		t.Error("expected no reload command on error")
+	}
+	if m.deleteTarget != "" {
+		t.Error("deleteTarget should be cleared even on error")
+	}
+	if !contains(m.message, "error") {
+		t.Errorf("expected an error message, got %q", m.message)
+	}
+	// TUI keeps running: further keys are still processed normally.
+	_, cmd = m.Update(key("r"))
+	if cmd == nil {
+		t.Error("TUI should keep processing keys after a delete error")
+	}
+}
+
+func TestView_footer_advertises_delete(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	if !contains(m.View(), "d delete") {
+		t.Error("expected the footer to mention 'd delete'")
+	}
+}
+
 func TestUpdate_loginDone_triggers_recheck(t *testing.T) {
 	m := newModel(runner.NewFake(), sampleProfiles(), "")
 	_, cmd := m.Update(loginDoneMsg{profile: "alpha", err: nil})

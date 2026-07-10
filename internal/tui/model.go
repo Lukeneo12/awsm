@@ -62,6 +62,9 @@ type model struct {
 	ta          textarea.Model
 	loadProfile string       // target profile for the load
 	loadParsed  creds.Parsed // parsed creds awaiting confirmation
+
+	// delete-profile flow: non-empty while the confirmation prompt is shown.
+	deleteTarget string
 }
 
 func newModel(r runner.CommandRunner, list []profiles.Profile, switchFile string) *model {
@@ -146,6 +149,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.reload()
 
 	case tea.KeyMsg:
+		// The delete-confirm prompt captures input while pending, ahead of the
+		// load flow's own steps.
+		if m.deleteTarget != "" {
+			return m.handleDeleteConfirmKey(msg)
+		}
 		// The load flow captures input while active.
 		switch m.loadStep {
 		case loadPaste:
@@ -197,6 +205,18 @@ func (m *model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// handleDeleteConfirmKey handles the y/n on the delete confirmation prompt.
+func (m *model) handleDeleteConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		return m.doDelete()
+	default:
+		m.deleteTarget = ""
+		m.message = "deletion cancelled"
+		return m, nil
+	}
+}
+
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.filter != "" || filterMode(msg) {
 		if cmd, handled := m.handleFilterKey(msg); handled {
@@ -233,6 +253,13 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ta.Focus()
 		m.message = ""
 		return m, textarea.Blink
+	case "d":
+		p, ok := m.selected()
+		if !ok {
+			return m, nil
+		}
+		m.deleteTarget = p.Name
+		m.message = ""
 	case "/":
 		m.filter = " " // enter filter mode; trimmed on display
 		m.applyFilter()
@@ -386,6 +413,29 @@ func (m *model) doLoad() (tea.Model, tea.Cmd) {
 	}
 	_ = profiles.SetOverride(m.paths.Overrides, profile, profiles.Override{Type: profiles.TypeManual})
 	m.message = "✓ credenciales cargadas en " + profile + " (key ****" + last4(parsed.AccessKeyID) + ")"
+	return m, m.reload()
+}
+
+// doDelete removes the pending delete target from credentials, config and the
+// awsm override — the same three writer calls the CLI `rm` command uses.
+func (m *model) doDelete() (tea.Model, tea.Cmd) {
+	name := m.deleteTarget
+	m.deleteTarget = ""
+
+	if err := profiles.RemoveProfile(m.paths.Credentials, name); err != nil {
+		m.message = "error deleting " + name + ": " + err.Error()
+		return m, nil
+	}
+	if err := profiles.RemoveConfigProfile(m.paths.Config, name); err != nil {
+		m.message = "error deleting " + name + ": " + err.Error()
+		return m, nil
+	}
+	if err := profiles.SetOverride(m.paths.Overrides, name, profiles.Override{}); err != nil {
+		m.message = "error deleting " + name + ": " + err.Error()
+		return m, nil
+	}
+
+	m.message = "✓ deleted " + name
 	return m, m.reload()
 }
 
