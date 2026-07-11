@@ -14,7 +14,8 @@ into one CLI + TUI. It does not reimplement SSO or SAML; it orchestrates the
 - **Switch** the active profile in your current shell (`AWS_PROFILE`).
 - **Login** with the right flow per profile type (`aws sso login` / `saml2aws login`).
 - **Status** — verify each session online via `aws sts get-caller-identity`.
-- **Manage static keys** — add/remove profiles in `~/.aws/credentials`.
+- **Manage static keys** — add/remove profiles in `~/.aws/credentials`, pasting
+  the whole credentials block instead of typing fields one by one.
 
 ## Quick start
 
@@ -78,7 +79,8 @@ on Windows). It auto-detects the format — `export AWS_...`, an ini
 shows a masked preview (profile, masked key, region, whether it carries a session
 token), and on `y` stores the access key, secret, optional session token and
 region into the profile (mode `0600`, pinned as `manual`). The secret is never
-printed. You can also pipe the block in:
+printed. A long session token that arrived line-wrapped by the copy is
+reconstructed to its original value. You can also pipe the block in:
 
 ```sh
 awsm load-credentials dev < creds.txt
@@ -95,17 +97,26 @@ writing the correct files:
 - **saml** → `~/.saml2aws` (account block);
 - **role** → `~/.aws/config` (`role_arn` + `source_profile`).
 
-Secrets are read without echo and never printed.
+For **manual** profiles the wizard first offers the same paste flow as
+`load-credentials`: paste the whole block, end with `Ctrl+D`, confirm the masked
+preview. Press `Ctrl+D` right away (empty paste) to fall back to field-by-field
+entry instead. Either way, secrets are read without echo and never printed.
 
 ### TUI keys
 
 `↑/↓` move · `enter` login selected · `s` switch · `a` add · `l` load ·
-`t` set-type · `r` refresh status · `/` filter · `q` quit
+`t` set-type · `d` delete · `r` refresh status · `/` filter · `q` quit
 
-- `a` and `t` relaunch the `awsm` wizard for the selected profile, then reload.
+- `a` opens a type menu (manual / sso / saml / role). **Manual** profiles are
+  created right in the TUI: type the new profile's name, then paste the
+  credentials block in the same paste box `l` uses. The other types hand off to
+  the CLI wizard and reload on return.
+- `t` relaunches the `awsm` wizard for the selected profile, then reloads.
 - `l` opens a paste box: paste the credentials block, press `ctrl+d` to see a
   preview (profile, masked key, region, whether it carries a session token — the
   secret is never shown), then `y` to confirm. `esc` cancels.
+- `d` deletes the selected profile after a `y/n` confirmation showing its name
+  and type — same semantics as `awsm rm` (credentials + config + override).
 
 ## How profiles are classified
 
