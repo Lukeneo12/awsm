@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
@@ -675,6 +676,137 @@ func TestAddManualCmd_does_not_leak_secret(t *testing.T) {
 	}
 	if outBuf.Len() != 0 {
 		t.Errorf("stdout must stay eval-safe (empty), got %q", outBuf.String())
+	}
+}
+
+// AC7-adjacent CLI edge case: when both the profile name and the type are
+// entered interactively (no positional arg, no --type flag), the paste read
+// must still work through the same wizard's bufio.Reader that already
+// consumed the name and type lines -- not a fresh cmd.InOrStdin() call, which
+// would race the buffered reader for the same fd and lose or duplicate bytes.
+func TestAddCmd_interactive_name_and_type_then_paste_share_the_reader(t *testing.T) {
+	a := addManualApp(t, func(string) (bool, error) { return true, nil })
+
+	add := a.addCmd()
+	// line 1: profile name, line 2: type, remaining bytes: the pasted block.
+	add.SetIn(strings.NewReader(
+		"interactive-dev\n" +
+			"manual\n" +
+			"export AWS_ACCESS_KEY_ID=\"ASIAINTER0007\"\n" +
+			"export AWS_SECRET_ACCESS_KEY=\"secret\"\n"))
+	// No args, no --type: both profile name and type are prompted.
+	if err := add.Execute(); err != nil {
+		t.Fatalf("add error: %v", err)
+	}
+
+	list, _ := profiles.List(a.paths)
+	p, ok := profiles.Find(list, "interactive-dev")
+	if !ok || p.Type != profiles.TypeManual {
+		t.Fatalf("expected interactive-dev manual, got %+v (ok=%v)", p, ok)
+	}
+	if p.AccessKeyIDMasked != "****0007" {
+		t.Errorf("masked key: got %q (paste bytes may have been lost/duplicated across readers)", p.AccessKeyIDMasked)
+	}
+}
+
+// AC3 edge case: a paste that is non-empty but carries only whitespace and
+// comment lines must NOT be treated as an empty paste (AC2's fallback
+// trigger is strings.TrimSpace(raw) == "", and comment/whitespace-only text
+// does not collapse to ""). It should hit the parse-failure path instead.
+func TestAddManualCmd_whitespace_and_comment_only_paste_errors_not_fallback(t *testing.T) {
+	a := addManualApp(t, func(string) (bool, error) { return true, nil })
+
+	add := a.addCmd()
+	add.SetIn(strings.NewReader("   \n# just a comment, no real fields\n; another comment\n\n"))
+	add.SetArgs([]string{"comment-only", "--type", "manual"})
+	if err := add.Execute(); err == nil {
+		t.Fatal("expected a parse error, not a silent fallback to field-by-field")
+	}
+
+	list, _ := profiles.List(a.paths)
+	if _, ok := profiles.Find(list, "comment-only"); ok {
+		t.Error("a whitespace/comment-only paste must not write a profile")
+	}
+}
+
+// AC3: the parse-failure error carries the same paste hint load-credentials
+// has always shown, including the EOF key the user is told to press.
+func TestAddManualCmd_unparseable_paste_error_mentions_EOF_hint(t *testing.T) {
+	a := addManualApp(t, func(string) (bool, error) { return true, nil })
+
+	add := a.addCmd()
+	add.SetIn(strings.NewReader("this is not a credentials block at all"))
+	add.SetArgs([]string{"bad-paste-hint", "--type", "manual"})
+	err := add.Execute()
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), prompt.EOFKey) {
+		t.Errorf("expected error to mention the EOF key %q, got: %v", prompt.EOFKey, err)
+	}
+}
+
+// Edge case: a paste using CRLF line endings (as pasted from Windows-authored
+// text or some SSO portal pages) must parse the same as LF-only input --
+// strings.TrimSpace strips the trailing \r along with other whitespace.
+func TestAddManualCmd_crlf_paste_parses(t *testing.T) {
+	a := addManualApp(t, func(string) (bool, error) { return true, nil })
+
+	add := a.addCmd()
+	add.SetIn(strings.NewReader(
+		"export AWS_ACCESS_KEY_ID=\"ASIACRLF0042\"\r\n" +
+			"export AWS_SECRET_ACCESS_KEY=\"secretcrlf\"\r\n" +
+			"export AWS_DEFAULT_REGION=\"us-east-1\"\r\n"))
+	add.SetArgs([]string{"crlf-prof", "--type", "manual"})
+	if err := add.Execute(); err != nil {
+		t.Fatalf("add error: %v", err)
+	}
+
+	list, _ := profiles.List(a.paths)
+	p, ok := profiles.Find(list, "crlf-prof")
+	if !ok || p.AccessKeyIDMasked != "****0042" {
+		t.Fatalf("expected crlf-prof with masked key ****0042, got %+v (ok=%v)", p, ok)
+	}
+}
+
+// Edge case: a.confirm returning a plain (non-ErrNoTTY) error must propagate
+// out of addManual and abort the write, exactly like load-credentials.
+func TestAddManualCmd_confirm_error_propagates_and_writes_nothing(t *testing.T) {
+	boom := errors.New("boom: console read failed")
+	a := addManualApp(t, func(string) (bool, error) { return false, boom })
+
+	add := a.addCmd()
+	add.SetIn(strings.NewReader(
+		"export AWS_ACCESS_KEY_ID=AKIA1234\nexport AWS_SECRET_ACCESS_KEY=s\n"))
+	add.SetArgs([]string{"confirm-err", "--type", "manual"})
+	err := add.Execute()
+	if err == nil {
+		t.Fatal("expected the confirm error to propagate")
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("expected wrapped boom error, got: %v", err)
+	}
+
+	list, _ := profiles.List(a.paths)
+	if _, ok := profiles.Find(list, "confirm-err"); ok {
+		t.Error("a confirm error must not write a profile")
+	}
+}
+
+// Edge case: a reader that fails outright (simulating a broken pipe) must
+// surface as a readPastedBlock error rather than being swallowed.
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, errors.New("simulated read failure") }
+
+func TestAddManualCmd_reader_failure_propagates(t *testing.T) {
+	a := addManualApp(t, func(string) (bool, error) { return true, nil })
+
+	add := a.addCmd()
+	add.SetIn(errReader{})
+	add.SetArgs([]string{"reader-fail", "--type", "manual"})
+	if err := add.Execute(); err == nil {
+		t.Error("expected an error when the underlying reader fails")
 	}
 }
 

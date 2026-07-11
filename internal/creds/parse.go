@@ -86,11 +86,15 @@ func joinWrappedValues(lines []string) []string {
 		j := i + 1
 		for ; j < len(lines); j++ {
 			frag := strings.TrimSpace(lines[j])
-			joined += frag
-			if strings.IndexByte(frag, q) >= 0 {
+			// Cut the closing fragment at the quote: anything after it (a
+			// stray comment, shell noise) is not part of the value, and
+			// keeping it would defeat unquote's surrounding-pair strip.
+			if k := strings.IndexByte(frag, q); k >= 0 {
+				joined += frag[:k+1]
 				closed = true
 				break
 			}
+			joined += frag
 		}
 		if !closed {
 			out = append(out, lines[i])
