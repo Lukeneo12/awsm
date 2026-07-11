@@ -52,6 +52,7 @@ Changes:
 - **Inject into `cmd` package, not `main`:** the version is consumed by cobra wiring in `cmd`; injecting there avoids threading a parameter through `cmd.Execute()`. Tradeoff: the ldflags path is longer than `main.version`, but it is set once in `.goreleaser.yaml`.
 - **`debug.ReadBuildInfo()` fallback:** gives correct versions for `go install module@version` builds with zero build tooling. Local builds show `dev`, which is honest and unambiguous.
 - **Flag only, no subcommand:** matches the request, smallest surface; cobra gives the flag for free once `Version` is set.
+- **Normalize the `v` prefix away (added during code review):** GoReleaser's `{{.Version}}` expands without the tag's `v` while `debug.ReadBuildInfo()` reports it with the `v`; `versionString()` strips the prefix from both paths so the same release reports identically regardless of install method.
 
 ### Alternatives considered
 - **Custom `version` subcommand:** rejected — duplicates what cobra's `Version` field provides and grows the command tree for no gain.
