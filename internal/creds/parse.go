@@ -21,7 +21,7 @@ type Parsed struct {
 // an access key id nor a secret can be found.
 func Parse(text string) (Parsed, error) {
 	var p Parsed
-	for _, raw := range strings.Split(text, "\n") {
+	for _, raw := range joinWrappedValues(strings.Split(text, "\n")) {
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 			continue
@@ -57,6 +57,77 @@ func Parse(text string) (Parsed, error) {
 		return Parsed{}, fmt.Errorf("could not find an access key id and secret access key in the pasted text")
 	}
 	return p, nil
+}
+
+// joinWrappedValues re-joins values that were line-wrapped inside an open
+// quote when the block was copied (e.g. a long session token soft-wrapped by
+// the terminal or portal page). A KEY="VALUE… line whose quote never closes on
+// the same line is concatenated with the following lines until the closing
+// quote appears — dropping the newlines and edge whitespace, since the wrap
+// inserted them and the original value had none. A quote that never closes
+// leaves the lines untouched, so malformed input degrades to the previous
+// per-line behavior instead of swallowing the rest of the block.
+func joinWrappedValues(lines []string) []string {
+	out := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); i++ {
+		stripped := stripPrefix(strings.TrimSpace(lines[i]))
+		// Skip exactly what Parse skips (blanks, comments, section headers):
+		// a comment like `; token="...` must not open a join that swallows
+		// the real credential lines below it.
+		if stripped == "" || strings.HasPrefix(stripped, "#") || strings.HasPrefix(stripped, ";") ||
+			(strings.HasPrefix(stripped, "[") && strings.HasSuffix(stripped, "]")) {
+			out = append(out, lines[i])
+			continue
+		}
+		eq := strings.IndexByte(stripped, '=')
+		if eq < 0 {
+			out = append(out, lines[i])
+			continue
+		}
+		q := openQuote(strings.TrimSpace(stripped[eq+1:]))
+		if q == 0 {
+			out = append(out, lines[i])
+			continue
+		}
+		// Accumulate in a Builder: += in a loop is quadratic, and a crafted
+		// paste of many short fragments inside one quote (bounded only by the
+		// 1 MiB read cap) would burn seconds of memcpy.
+		var joined strings.Builder
+		joined.WriteString(stripped)
+		closed := false
+		j := i + 1
+		for ; j < len(lines); j++ {
+			frag := strings.TrimSpace(lines[j])
+			// Cut the closing fragment at the quote: anything after it (a
+			// stray comment, shell noise) is not part of the value, and
+			// keeping it would defeat unquote's surrounding-pair strip.
+			if k := strings.IndexByte(frag, q); k >= 0 {
+				joined.WriteString(frag[:k+1])
+				closed = true
+				break
+			}
+			joined.WriteString(frag)
+		}
+		if !closed {
+			out = append(out, lines[i])
+			continue
+		}
+		out = append(out, joined.String())
+		i = j
+	}
+	return out
+}
+
+// openQuote returns the quote byte opening val when that quote is not closed
+// on the same line, or 0 when the value needs no joining.
+func openQuote(val string) byte {
+	if val == "" || (val[0] != '"' && val[0] != '\'') {
+		return 0
+	}
+	if strings.IndexByte(val[1:], val[0]) >= 0 {
+		return 0 // opens and closes on the same line
+	}
+	return val[0]
 }
 
 // stripPrefix removes a leading shell/PowerShell/cmd assignment prefix so every

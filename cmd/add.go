@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Lukeneo12/awsm/internal/profiles"
+	"github.com/Lukeneo12/awsm/internal/prompt"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -59,7 +60,78 @@ func (a *app) addCmd() *cobra.Command {
 	return c
 }
 
+// addManual offers to paste a whole AWS credentials block (the same UX as
+// `load-credentials`, sharing its helper so the two commands cannot drift) and
+// falls back to the field-by-field wizard on an empty paste.
 func (a *app) addManual(w *wizard, profile string) error {
+	w.errf("Paste the AWS credentials block, then press %s (or press %s right away to enter fields one by one):\n",
+		prompt.EOFKey, prompt.EOFKey)
+
+	// Read the paste through the wizard's own bufio.Reader (w.in), not a fresh
+	// cmd.InOrStdin() call: if the profile name or type were prompted for
+	// above, w.in may already hold buffered bytes read from stdin, and a
+	// second independent reader over the same fd would lose or re-read them.
+	//
+	// Sharing one bufio.Reader across the paste read and the field-by-field
+	// fallback also matches real terminal behavior: readPastedBlock's
+	// io.ReadAll stops at the first EOF, but on a live TTY that EOF (Ctrl+D
+	// on an empty line) isn't "sticky" -- the fd stays open and a later read
+	// just waits for more input. bufio.Reader mirrors this: it clears its
+	// cached error after returning it once (see bufio.Reader.readErr), so the
+	// very next ReadString call retries the underlying reader instead of
+	// EOFing forever. A plain strings.Reader/bytes.Reader, once drained, EOFs
+	// permanently on every later call -- there is no way to "add more bytes"
+	// to it afterward. So a test that needs "empty paste, then field values"
+	// cannot use one; it needs a reader that yields a single EOF and then
+	// serves more data on the next call (see eofThenReader in cmd_test.go).
+	raw, err := readPastedBlock(w.in)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(raw) == "" {
+		return a.addManualFields(w, profile)
+	}
+
+	// A non-empty paste that fails to parse is reported as an error rather
+	// than silently falling back to field-by-field: after consuming a paste,
+	// hidden field prompts would receive nothing sensible, and silently
+	// switching to no-echo prompts here is exactly the confusing behavior
+	// this feature removes.
+	parsed, err := parsePastedCreds(raw)
+	if err != nil {
+		return err
+	}
+
+	w.errf("About to store %q as manual:\n", profile)
+	printCredsPreview(w.errw, parsed)
+
+	ok, err := confirmPastedCreds(w.errw, a.confirm)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		w.errf("aborted, nothing written\n")
+		return nil
+	}
+
+	in := profiles.ManualInput{
+		AccessKeyID:  parsed.AccessKeyID,
+		Secret:       parsed.SecretAccessKey,
+		SessionToken: parsed.SessionToken,
+		Region:       parsed.Region,
+	}
+	if err := profiles.AddManual(a.paths.Credentials, a.paths.Config, profile, in); err != nil {
+		return err
+	}
+	_ = profiles.SetOverride(a.paths.Overrides, profile, profiles.Override{Type: profiles.TypeManual})
+	w.errf("stored profile %q (manual, %s, key ****%s) [mode 0600]\n",
+		profile, credsKind(parsed), last4(parsed.AccessKeyID))
+	return nil
+}
+
+// addManualFields is the original field-by-field wizard: the escape hatch for
+// users who submit an empty paste (immediate EOF) and want to type each value.
+func (a *app) addManualFields(w *wizard, profile string) error {
 	in := profiles.ManualInput{
 		AccessKeyID:  w.ask("akid", "AWS Access Key ID", ""),
 		Secret:       w.secret("AWS Secret Access Key (hidden)"),
