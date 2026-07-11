@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Lukeneo12/awsm/internal/creds"
 	"github.com/Lukeneo12/awsm/internal/profiles"
@@ -1333,5 +1335,54 @@ func TestUpdate_loginDone_triggers_recheck(t *testing.T) {
 	}
 	if m.checking != 1 {
 		t.Errorf("checking: got %d want 1", m.checking)
+	}
+}
+
+// Multi-byte runes (ñ, á, …) count as one character for the name buffer, and
+// backspace removes the whole rune, never leaving a broken UTF-8 tail.
+func TestAdd_name_accepts_multibyte_runes_and_backspace_removes_whole_rune(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.loadStep = loadName
+
+	m.Update(key("a"))
+	m.Update(key("ñ"))
+	if m.nameInput != "añ" {
+		t.Fatalf("expected multibyte rune appended, got %q", m.nameInput)
+	}
+
+	m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.nameInput != "a" {
+		t.Errorf("backspace should remove the whole rune, got %q", m.nameInput)
+	}
+}
+
+// The filter shares the rune-aware input handling.
+func TestFilter_accepts_multibyte_runes(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.Update(key("/"))
+	m.Update(key("ñ"))
+	if !contains(m.filter, "ñ") {
+		t.Errorf("expected multibyte rune in filter, got %q", m.filter)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if contains(m.filter, "ñ") || !utf8.ValidString(m.filter) {
+		t.Errorf("backspace should remove the whole rune cleanly, got %q", m.filter)
+	}
+}
+
+// The digit-shortcut range and the menu hint both follow len(addableTypes()).
+func TestAddType_shortcuts_and_hint_follow_type_count(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.loadStep = loadType
+
+	n := len(addableTypes())
+	if !contains(m.View(), fmt.Sprintf("1-%d", n)) {
+		t.Errorf("hint should advertise 1-%d, got: %s", n, m.View())
+	}
+
+	// A digit just past the range is ignored (no panic, no selection).
+	m.Update(key(fmt.Sprintf("%d", n+1)))
+	if m.loadStep != loadType {
+		t.Errorf("out-of-range digit should be ignored, loadStep=%v", m.loadStep)
 	}
 }

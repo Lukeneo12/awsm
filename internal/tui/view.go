@@ -135,7 +135,8 @@ func (m *model) typeView() string {
 	if m.message != "" {
 		b.WriteString(promptStyle.Render(m.message) + "\n")
 	}
-	b.WriteString(helpStyle.Render("↑/↓ elegir · 1-4 · enter seleccionar · esc cancelar"))
+	b.WriteString(helpStyle.Render(fmt.Sprintf(
+		"↑/↓ elegir · 1-%d · enter seleccionar · esc cancelar", len(addableTypes()))))
 	return b.String()
 }
 
