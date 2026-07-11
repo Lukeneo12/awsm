@@ -71,6 +71,14 @@ func joinWrappedValues(lines []string) []string {
 	out := make([]string, 0, len(lines))
 	for i := 0; i < len(lines); i++ {
 		stripped := stripPrefix(strings.TrimSpace(lines[i]))
+		// Skip exactly what Parse skips (blanks, comments, section headers):
+		// a comment like `; token="...` must not open a join that swallows
+		// the real credential lines below it.
+		if stripped == "" || strings.HasPrefix(stripped, "#") || strings.HasPrefix(stripped, ";") ||
+			(strings.HasPrefix(stripped, "[") && strings.HasSuffix(stripped, "]")) {
+			out = append(out, lines[i])
+			continue
+		}
 		eq := strings.IndexByte(stripped, '=')
 		if eq < 0 {
 			out = append(out, lines[i])

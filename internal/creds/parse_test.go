@@ -287,3 +287,19 @@ export AWS_SECRET_ACCESS_KEY=secretvalue001`
 		t.Errorf("fields after the malformed line lost: %+v", p)
 	}
 }
+
+// A comment line containing '=' and an unclosed quote must not open a join
+// that swallows the real credential lines below it — joinWrappedValues skips
+// exactly the lines Parse skips (external review of PR #8, finding 1).
+func TestParse_comment_with_unclosed_quote_does_not_swallow_creds(t *testing.T) {
+	in := "; note: token=\"do not share\n" +
+		"aws_access_key_id = \"ASIAEXAMPLE0001\"\n" +
+		"aws_secret_access_key = secretvalue001\n"
+	p, err := Parse(in)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if p.AccessKeyID != "ASIAEXAMPLE0001" || p.SecretAccessKey != "secretvalue001" {
+		t.Errorf("comment line swallowed credential lines: %+v", p)
+	}
+}
