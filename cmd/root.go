@@ -34,6 +34,7 @@ func Execute() error {
 	root := &cobra.Command{
 		Use:           "awsm",
 		Short:         "Local manager for AWS credentials (SSO, SAML, assume-role, static keys)",
+		Version:       versionString(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
