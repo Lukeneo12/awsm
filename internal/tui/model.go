@@ -422,20 +422,20 @@ func (m *model) doDelete() (tea.Model, tea.Cmd) {
 	name := m.deleteTarget
 	m.deleteTarget = ""
 
-	if err := profiles.RemoveProfile(m.paths.Credentials, name); err != nil {
-		m.message = "error deleting " + name + ": " + err.Error()
-		return m, nil
+	err := profiles.RemoveProfile(m.paths.Credentials, name)
+	if err == nil {
+		err = profiles.RemoveConfigProfile(m.paths.Config, name)
 	}
-	if err := profiles.RemoveConfigProfile(m.paths.Config, name); err != nil {
-		m.message = "error deleting " + name + ": " + err.Error()
-		return m, nil
+	if err == nil {
+		err = profiles.SetOverride(m.paths.Overrides, name, profiles.Override{})
 	}
-	if err := profiles.SetOverride(m.paths.Overrides, name, profiles.Override{}); err != nil {
+	if err != nil {
 		m.message = "error deleting " + name + ": " + err.Error()
-		return m, nil
+	} else {
+		m.message = "✓ deleted " + name
 	}
-
-	m.message = "✓ deleted " + name
+	// Reload even on failure: an earlier writer call may already have mutated
+	// disk, and the list must never show a profile that is no longer there.
 	return m, m.reload()
 }
 

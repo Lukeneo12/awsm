@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Lukeneo12/awsm/internal/profiles"
@@ -551,6 +552,302 @@ func TestView_footer_advertises_delete(t *testing.T) {
 	m := newModel(runner.NewFake(), sampleProfiles(), "")
 	if !contains(m.View(), "d delete") {
 		t.Error("expected the footer to mention 'd delete'")
+	}
+}
+
+// AC1 also requires the prompt to display the profile's detected type, not
+// just its name.
+func TestUpdate_d_shows_delete_confirm_with_type(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.cursor = 1 // beta, TypeManual
+	m.Update(key("d"))
+	out := m.View()
+	if !contains(out, "beta") {
+		t.Error("expected the confirm screen to show the profile name")
+	}
+	if !contains(out, "manual") {
+		t.Errorf("expected the confirm screen to show the profile type, got: %s", out)
+	}
+}
+
+// AC1: "the list keybindings are suspended" — while the confirm prompt is
+// pending, navigation keys must not move the cursor; any non-y/Y key cancels
+// the pending delete instead of falling through to handleKey.
+func TestDeleteConfirm_suspends_list_navigation_keys(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.cursor = 0
+	m.deleteTarget = "beta"
+
+	m.Update(key("down"))
+
+	if m.cursor != 0 {
+		t.Errorf("cursor should not move while delete confirm is pending, got %d", m.cursor)
+	}
+	if m.deleteTarget != "" {
+		t.Error("the down key should have cancelled the pending delete, not navigated")
+	}
+}
+
+// AC2 explicitly allows uppercase Y as well as lowercase y.
+func TestDeleteConfirm_uppercase_Y_also_confirms(t *testing.T) {
+	dir := t.TempDir()
+	paths := newDeletePaths(dir)
+	seedManualProfile(t, paths, "beta")
+	seedManualProfile(t, paths, "alpha") // survives, so reload's checkAllCmd is non-nil
+
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.paths = paths
+	m.deleteTarget = "beta"
+
+	_, cmd := m.Update(key("Y"))
+	if cmd == nil {
+		t.Fatal("expected a reload command after confirming with uppercase Y")
+	}
+	if !contains(m.message, "deleted") {
+		t.Errorf("expected a success message, got %q", m.message)
+	}
+	if _, ok := profiles.Find(m.profiles, "beta"); ok {
+		t.Error("expected beta to be gone from the reloaded profile list")
+	}
+}
+
+// AC3: cancelling must actually return to the list view (not leave the
+// confirm screen rendering).
+func TestDeleteConfirm_cancel_returns_to_list_view(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.deleteTarget = "beta"
+
+	m.Update(key("n"))
+
+	out := m.View()
+	if contains(out, "Delete profile") {
+		t.Error("expected the view to return to the list, not stay on the confirm screen")
+	}
+	if !contains(out, "d delete") {
+		t.Error("expected the normal list footer to render again after cancel")
+	}
+}
+
+// Edge case: while the filter query is non-empty, every single-rune key
+// (including 'd') is appended to the filter text instead of triggering its
+// list action — this matches the existing behavior for 'a'/'s'/'t'/'l' and is
+// not specific to delete, but it means "d" cannot delete while actively
+// composing a filter query; the user must commit the filter (enter/esc) first
+// and press 'd' again.
+func TestUpdate_d_while_filter_active_is_swallowed_by_filter_text(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.Update(key("/"))
+	m.Update(key("b")) // filter now "b", matches "beta"
+
+	m.Update(key("d")) // should be appended to the filter, not trigger delete
+
+	if m.deleteTarget != "" {
+		t.Errorf("expected 'd' to be swallowed by the active filter, got deleteTarget %q", m.deleteTarget)
+	}
+	// '/' seeds the filter with a leading space (trimmed only on display/
+	// commit), so the accumulated text is " bd", not "bd".
+	if strings.TrimSpace(m.filter) != "bd" {
+		t.Errorf("expected filter to accumulate 'd', got %q", m.filter)
+	}
+}
+
+// Edge case: the delete and load flows are mutually exclusive and the load
+// flow's paste textarea is entered first, so 'd' pressed mid-paste must be
+// treated as a literal character typed into the textarea, not a delete
+// trigger.
+func TestUpdate_d_during_load_paste_is_typed_not_delete(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.cursor = 1 // beta
+	m.Update(key("l"))
+	if m.loadStep != loadPaste {
+		t.Fatalf("expected loadPaste, got %v", m.loadStep)
+	}
+
+	m.Update(key("d"))
+
+	if m.deleteTarget != "" {
+		t.Errorf("expected 'd' during paste to not start a delete, got deleteTarget %q", m.deleteTarget)
+	}
+	if m.loadStep != loadPaste {
+		t.Error("expected to remain in the paste step")
+	}
+	if !contains(m.ta.Value(), "d") {
+		t.Errorf("expected 'd' to be typed into the textarea, got %q", m.ta.Value())
+	}
+}
+
+// Edge case: at the load-confirm step, any non-y/Y/enter key — including 'd'
+// — is treated as "cancel the load", per handleConfirmKey's default branch.
+// It must not leak into starting a delete.
+func TestUpdate_d_during_load_confirm_cancels_load_not_delete(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.cursor = 1 // beta
+	m.Update(key("l"))
+	m.ta.SetValue("export AWS_ACCESS_KEY_ID=ASIACLIP0002\nexport AWS_SECRET_ACCESS_KEY=sec\n")
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	if m.loadStep != loadConfirm {
+		t.Fatalf("expected loadConfirm, got %v", m.loadStep)
+	}
+
+	m.Update(key("d"))
+
+	if m.loadStep != loadNone {
+		t.Error("expected 'd' at the load-confirm step to cancel the load")
+	}
+	if m.deleteTarget != "" {
+		t.Errorf("expected no delete to start, got deleteTarget %q", m.deleteTarget)
+	}
+	if !contains(m.message, "cancel") {
+		t.Errorf("expected a cancel message, got %q", m.message)
+	}
+}
+
+// Edge case: deleting the only (or last-in-filter) selected profile must not
+// leave the cursor out of range for the now-shorter filtered list.
+func TestDeleteConfirm_y_on_sole_profile_clamps_cursor(t *testing.T) {
+	dir := t.TempDir()
+	paths := newDeletePaths(dir)
+	seedManualProfile(t, paths, "solo")
+
+	m := newModel(runner.NewFake(), []profiles.Profile{{Name: "solo", Type: profiles.TypeManual}}, "")
+	m.paths = paths
+	m.deleteTarget = "solo"
+
+	// reload() re-reads the list and re-applies the filter synchronously
+	// before returning the (deferred) status-check command; with zero
+	// profiles left, checkAllCmd's tea.Batch of zero commands collapses to a
+	// nil Cmd, so we assert on model state directly rather than on cmd.
+	m.Update(key("y"))
+
+	if len(m.profiles) != 0 {
+		t.Fatalf("expected the profile list to be empty after deleting the sole profile, got %d", len(m.profiles))
+	}
+	if len(m.filtered) != 0 {
+		t.Fatalf("expected an empty filtered list, got %d", len(m.filtered))
+	}
+	if m.cursor != 0 {
+		t.Errorf("expected cursor clamped to 0, got %d", m.cursor)
+	}
+	// Must not panic.
+	out := m.View()
+	if !contains(out, "no profiles match") {
+		t.Errorf("expected the empty-list message, got: %s", out)
+	}
+}
+
+// Edge case: if the in-memory profile list no longer contains the pending
+// delete target (e.g. it was removed by a concurrent reload triggered by
+// another message), the confirm screen must still render without panicking.
+func TestDeleteConfirmView_renders_when_profile_missing_from_list(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.deleteTarget = "ghost-profile-not-in-list"
+
+	out := m.View()
+
+	if !contains(out, "ghost-profile-not-in-list") {
+		t.Errorf("expected the confirm screen to still show the target name, got: %s", out)
+	}
+	if !contains(out, "type:") {
+		t.Errorf("expected the type line to still render, got: %s", out)
+	}
+}
+
+// Risk from the spec ("Removal partially succeeds"): if the credentials write
+// succeeds but the config removal fails, doDelete surfaces the error AND still
+// reloads, so the list keeps mirroring disk. Here beta survives the reload —
+// correctly — because its config section and override are still on disk.
+func TestDeleteConfirm_y_config_removal_failure_surfaces_error_and_reloads(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-based write denial does not apply to root")
+	}
+	dir := t.TempDir()
+	paths := newDeletePaths(dir)
+	seedManualProfile(t, paths, "beta")
+	// A read-only config file lets RemoveConfigProfile load the section but
+	// fail on save, after RemoveProfile has already succeeded.
+	if err := os.Chmod(paths.Config, 0o400); err != nil {
+		t.Fatalf("setup chmod: %v", err)
+	}
+
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.paths = paths
+	m.deleteTarget = "beta"
+
+	_, cmd := m.Update(key("y"))
+
+	if !contains(m.message, "error deleting beta") {
+		t.Errorf("expected a delete error message, got %q", m.message)
+	}
+	if m.deleteTarget != "" {
+		t.Error("deleteTarget should be cleared even on partial failure")
+	}
+	if cmd == nil {
+		t.Error("expected a reload command even when config removal fails")
+	}
+
+	credData, err := os.ReadFile(paths.Credentials)
+	if err != nil {
+		t.Fatalf("reading credentials fixture: %v", err)
+	}
+	if contains(string(credData), "beta") {
+		t.Error("expected credentials removal to have already happened before the config step failed")
+	}
+	// The reloaded list mirrors disk: beta is still defined by config+override,
+	// so it must remain visible.
+	if _, ok := profiles.Find(m.profiles, "beta"); !ok {
+		t.Error("expected beta to survive the reload while its config section still exists on disk")
+	}
+}
+
+// Covers doDelete's third error branch (override write failure) after both the
+// credentials and config removals succeeded. This is the case the reload-on-
+// error behavior exists for: beta is gone from every file that defined it, so
+// the reloaded list must drop it even though the delete reported an error.
+func TestDeleteConfirm_y_override_removal_failure_still_reloads_list(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-based write denial does not apply to root")
+	}
+	dir := t.TempDir()
+	paths := newDeletePaths(dir)
+	// Seed beta WITHOUT an override so the reloaded list has no reason to keep
+	// it once credentials and config are gone.
+	in := profiles.ManualInput{AccessKeyID: "AKIASEED0002", Secret: "sekret"}
+	if err := profiles.AddManual(paths.Credentials, paths.Config, "beta", in); err != nil {
+		t.Fatalf("seed AddManual: %v", err)
+	}
+	// A read-only overrides file (holding an unrelated entry) makes
+	// SetOverride load fine but fail on save.
+	if err := profiles.SetOverride(paths.Overrides, "other", profiles.Override{Type: profiles.TypeManual}); err != nil {
+		t.Fatalf("seed SetOverride: %v", err)
+	}
+	if err := os.Chmod(paths.Overrides, 0o400); err != nil {
+		t.Fatalf("setup chmod: %v", err)
+	}
+
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.paths = paths
+	m.deleteTarget = "beta"
+
+	_, cmd := m.Update(key("y"))
+
+	if !contains(m.message, "error deleting beta") {
+		t.Errorf("expected a delete error message, got %q", m.message)
+	}
+	if cmd == nil {
+		t.Error("expected a reload command even when the override write fails")
+	}
+
+	credData, _ := os.ReadFile(paths.Credentials)
+	if contains(string(credData), "beta") {
+		t.Error("expected credentials removal to have already happened before the override step failed")
+	}
+	configData, _ := os.ReadFile(paths.Config)
+	if contains(string(configData), "beta") {
+		t.Error("expected config removal to have already happened before the override step failed")
+	}
+	// The list must not keep showing a profile no file defines anymore.
+	if _, ok := profiles.Find(m.profiles, "beta"); ok {
+		t.Error("expected the reloaded list to drop beta after its files were removed, despite the override error")
 	}
 }
 

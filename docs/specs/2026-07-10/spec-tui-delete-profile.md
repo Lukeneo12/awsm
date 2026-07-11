@@ -37,7 +37,7 @@ Desired state: the profile list in the TUI supports deleting the selected profil
 - [ ] AC2: Given the confirmation prompt, when the user presses `y` (or `Y`), then the profile's section is removed from the credentials file, its section (`[profile X]` or `[X]`) is removed from the config file, its awsm override is cleared, the profile list reloads without the profile, and a success message ("✓ deleted <name>") is shown.
 - [ ] AC3: Given the confirmation prompt, when the user presses `n`, `esc`, or any other key, then nothing is deleted, the TUI returns to the list view, and a "cancelled" message is shown.
 - [ ] AC4: Given an empty (or fully filtered-out) profile list, when the user presses `d`, then nothing happens (no prompt, no crash).
-- [ ] AC5: Given a removal that fails (e.g. unwritable credentials file), when the user confirms, then the error is shown in the message line and the TUI keeps running.
+- [ ] AC5: Given a removal that fails (e.g. unwritable credentials file), when the user confirms, then the error is shown in the message line, the TUI keeps running, and the profile list is reloaded from disk so it never shows state a partial failure already changed.
 - [ ] AC6: The list-view help footer includes the `d` action (e.g. `d delete`).
 - [ ] AC7: The credentials file keeps mode `0600` after deletion (existing writers invariant holds).
 - [ ] AC8: All new behavior is covered by unit tests in `internal/tui/model_test.go` (confirm/cancel/empty-list/error paths) without touching the real home directory (tests point `profiles.Paths` at fixtures).
@@ -49,7 +49,7 @@ All changes live in `internal/tui` (`model.go`, `view.go`) plus tests. No new pa
 **State.** Add a `deleteTarget string` field to `model` (empty = no pending delete). This mirrors how the load flow tracks its target, but a single field is enough — the delete flow has one step. The load flow's `loadStep` state machine is left untouched.
 
 **Update.** In `handleKey` (list view), add `case "d"`: if `m.selected()` returns a profile, set `deleteTarget` to its name and clear `m.message`. In the main key dispatch (before list handling, alongside the `loadConfirm` branch), when `deleteTarget != ""` route keys to a new `handleDeleteConfirmKey`:
-- `y`/`Y` → call `profiles.RemoveProfile(m.paths.Credentials, name)`, `profiles.RemoveConfigProfile(m.paths.Config, name)`, and `profiles.SetOverride(m.paths.Overrides, name, profiles.Override{})`. On first error: set the error in `m.message`, clear `deleteTarget`, stay in list view. On success: set `m.message = "✓ deleted <name>"`, clear `deleteTarget`, return `m.reload()` so the list re-reads disk and status checks restart.
+- `y`/`Y` → call `profiles.RemoveProfile(m.paths.Credentials, name)`, `profiles.RemoveConfigProfile(m.paths.Config, name)`, and `profiles.SetOverride(m.paths.Overrides, name, profiles.Override{})`, stopping at the first error. Set `m.message` to the error or to `"✓ deleted <name>"`, clear `deleteTarget`, and return `m.reload()` on **every** path — success or failure. Reloading after a failed delete matters because an earlier writer call may already have mutated disk (e.g. credentials removed, config write failed); the list must keep mirroring what is actually on disk instead of showing the pre-delete state until a manual refresh. *(Updated during implementation: the first version reloaded only on success; QA flagged the stale-list gap and the approach was corrected.)*
 - anything else → clear `deleteTarget`, set a "deletion cancelled" message.
 
 Deletion runs in-process against `m.paths` (like `doLoad` already does for `AddManual`) rather than shelling out to `awsm rm` via `runSelf`: the operation is non-interactive, needs no terminal handoff, and in-process calls keep it testable with fixture paths.
@@ -73,7 +73,7 @@ Deletion runs in-process against `m.paths` (like `doLoad` already does for `AddM
 | Risk | Probability | Impact | Mitigation |
 |------|-------------|--------|------------|
 | User deletes the wrong profile (destructive, no undo) | Med | High | Mandatory y/n confirm showing name + type; default-deny on any other key |
-| Removal partially succeeds (credentials removed, config write fails) | Low | Med | Surface the error immediately; re-running delete is idempotent (writers treat missing sections/files as no-ops) |
+| Removal partially succeeds (credentials removed, config write fails) | Low | Med | Surface the error immediately and reload the list so it reflects disk; re-running delete is idempotent (writers treat missing sections/files as no-ops) |
 | Key collision or regression in existing keybindings | Low | Med | `d` is currently unbound in list view; tests cover existing bindings still working |
 
 ### Rollback plan
