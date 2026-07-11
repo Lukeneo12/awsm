@@ -236,11 +236,235 @@ func TestFilter_enter_keeps_filter(t *testing.T) {
 	}
 }
 
-func TestUpdate_a_launches_add(t *testing.T) {
+func TestUpdate_a_opens_type_menu(t *testing.T) {
 	m := newModel(runner.NewFake(), sampleProfiles(), "")
 	_, cmd := m.Update(key("a"))
+	if m.loadStep != loadType {
+		t.Fatalf("expected loadType after 'a', got %v", m.loadStep)
+	}
+	if cmd != nil {
+		t.Error("opening the type menu should not launch an exec command yet")
+	}
+}
+
+func TestAddType_manual_goes_to_name_step(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.Update(key("a"))                       // type menu
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // cursor at 0 = manual
+	if m.loadStep != loadName {
+		t.Fatalf("expected loadName after selecting manual, got %v", m.loadStep)
+	}
+}
+
+func TestAddType_nonmanual_suspends_to_wizard(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.Update(key("a"))           // type menu
+	_, cmd := m.Update(key("2")) // sso -> CLI wizard
 	if cmd == nil {
-		t.Error("expected an exec command to launch the add wizard")
+		t.Error("expected an exec command to launch the CLI wizard for sso")
+	}
+	if m.loadStep != loadNone {
+		t.Errorf("expected load flow reset before suspending, got %v", m.loadStep)
+	}
+}
+
+func TestAddType_1to4_shortcuts_select_each_type(t *testing.T) {
+	types := addableTypes()
+	for i, want := range types {
+		m := newModel(runner.NewFake(), sampleProfiles(), "")
+		m.Update(key("a"))
+		shortcut := string(rune('1' + i))
+		_, cmd := m.Update(key(shortcut))
+		if want == profiles.TypeManual {
+			if m.loadStep != loadName {
+				t.Errorf("shortcut %q: expected loadName for manual, got %v", shortcut, m.loadStep)
+			}
+			continue
+		}
+		if cmd == nil {
+			t.Errorf("shortcut %q: expected an exec command for %s", shortcut, want)
+		}
+	}
+}
+
+func TestAddType_navigates_with_arrows_and_wraps(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.Update(key("a"))
+	m.Update(key("down"))
+	if m.typeCursor != 1 {
+		t.Errorf("type cursor after down: got %d want 1", m.typeCursor)
+	}
+	m.Update(key("up"))
+	m.Update(key("up")) // wraps to the last entry
+	if m.typeCursor != len(addableTypes())-1 {
+		t.Errorf("type cursor after wrap: got %d want %d", m.typeCursor, len(addableTypes())-1)
+	}
+}
+
+func TestAddType_esc_cancels_back_to_list(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.Update(key("a"))
+	m.Update(key("down"))
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.loadStep != loadNone {
+		t.Error("esc should cancel the type menu")
+	}
+	if !contains(m.message, "cancel") {
+		t.Errorf("expected a cancel message, got %q", m.message)
+	}
+}
+
+func TestAdd_name_then_paste_creates_manual_profile(t *testing.T) {
+	dir := t.TempDir()
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.paths = profiles.Paths{
+		Credentials: filepath.Join(dir, "credentials"),
+		Config:      filepath.Join(dir, "config"),
+		Overrides:   filepath.Join(dir, "profiles.ini"),
+	}
+
+	m.Update(key("a"))                       // type menu
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // manual -> name step
+	for _, r := range "delta" {
+		m.Update(key(string(r)))
+	}
+	if m.nameInput != "delta" {
+		t.Fatalf("name buffer: got %q want delta", m.nameInput)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // name -> paste
+	if m.loadStep != loadPaste || m.loadProfile != "delta" {
+		t.Fatalf("expected loadPaste for delta, got step=%v profile=%q", m.loadStep, m.loadProfile)
+	}
+
+	m.ta.SetValue("export AWS_ACCESS_KEY_ID=ASIANEW00001\n" +
+		"export AWS_SECRET_ACCESS_KEY=sec\nexport AWS_SESSION_TOKEN=tok\n")
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlD}) // preview
+	if m.loadStep != loadConfirm {
+		t.Fatalf("expected loadConfirm, got %v", m.loadStep)
+	}
+	m.Update(key("y")) // confirm -> store
+
+	list, _ := profiles.List(m.paths)
+	p, ok := profiles.Find(list, "delta")
+	if !ok || p.Type != profiles.TypeManual {
+		t.Fatalf("expected delta stored as manual, got %+v (ok=%v)", p, ok)
+	}
+	if p.AccessKeyIDMasked != "****0001" {
+		t.Errorf("masked key: got %q", p.AccessKeyIDMasked)
+	}
+
+	info, err := os.Stat(m.paths.Credentials)
+	if err != nil {
+		t.Fatalf("stat credentials: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("credentials file mode: got %o want 0600", info.Mode().Perm())
+	}
+}
+
+func TestAdd_name_rejects_empty_name(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.Update(key("a"))                       // type menu
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // manual -> name step
+
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // empty name
+
+	if m.loadStep != loadName {
+		t.Error("empty name should keep the name step")
+	}
+	if !contains(m.message, "vacío") {
+		t.Errorf("expected empty-name message, got %q", m.message)
+	}
+}
+
+func TestAdd_name_rejects_duplicate_name(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.Update(key("a"))                       // type menu
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // manual -> name step
+
+	for _, r := range "beta" { // beta already exists
+		m.Update(key(string(r)))
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.loadStep != loadName {
+		t.Error("duplicate name should keep the name step")
+	}
+	if !contains(m.message, "ya existe") {
+		t.Errorf("expected duplicate message, got %q", m.message)
+	}
+}
+
+func TestAdd_name_backspace_edits_buffer(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.Update(key("a"))
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m.Update(key("d"))
+	m.Update(key("x"))
+	m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.nameInput != "d" {
+		t.Errorf("name buffer after backspace: got %q want %q", m.nameInput, "d")
+	}
+}
+
+func TestAdd_name_esc_cancels(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.Update(key("a"))                       // type menu
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // manual -> name step
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})   // cancel from name step
+	if m.loadStep != loadNone {
+		t.Error("esc should cancel the name step")
+	}
+	if !contains(m.message, "cancel") {
+		t.Errorf("expected a cancel message, got %q", m.message)
+	}
+}
+
+func TestView_renders_add_type_and_name_steps(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+
+	m.loadStep = loadType
+	if out := m.View(); !contains(out, "manual") || !contains(out, "sso") {
+		t.Errorf("type view missing options:\n%s", out)
+	}
+
+	m.loadStep = loadName
+	m.nameInput = "delta"
+	if out := m.View(); !contains(out, "delta") {
+		t.Errorf("name view should echo the typed name:\n%s", out)
+	}
+}
+
+// 'd' during the type menu must be ignored, not start a delete.
+func TestUpdate_d_during_type_menu_is_ignored(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.Update(key("a"))
+	m.Update(key("d"))
+	if m.deleteTarget != "" {
+		t.Errorf("expected 'd' during the type menu to not start a delete, got deleteTarget %q", m.deleteTarget)
+	}
+	if m.loadStep != loadType {
+		t.Error("expected to remain on the type menu")
+	}
+}
+
+// 'd' during the name step must be typed into the name buffer, not start a
+// delete.
+func TestUpdate_d_during_name_step_is_typed_not_delete(t *testing.T) {
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.Update(key("a"))
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // manual -> name step
+
+	m.Update(key("d"))
+
+	if m.deleteTarget != "" {
+		t.Errorf("expected 'd' during the name step to not start a delete, got deleteTarget %q", m.deleteTarget)
+	}
+	if m.loadStep != loadName {
+		t.Error("expected to remain on the name step")
+	}
+	if m.nameInput != "d" {
+		t.Errorf("expected 'd' to be typed into the name buffer, got %q", m.nameInput)
 	}
 }
 

@@ -27,9 +27,18 @@ type loadStep int
 
 const (
 	loadNone    loadStep = iota // not loading
+	loadType                    // choosing the type of the new profile
+	loadName                    // entering the new manual profile's name
 	loadPaste                   // textarea open, user pasting
 	loadConfirm                 // parsed preview shown, awaiting y/n
 )
+
+// addableTypes is the ordered menu shown when adding a profile.
+func addableTypes() []profiles.Type {
+	return []profiles.Type{
+		profiles.TypeManual, profiles.TypeSSO, profiles.TypeSAML, profiles.TypeRole,
+	}
+}
 
 // Run launches the TUI. switchFile, when non-empty, is the path the wrapper
 // reads after exit to apply the chosen profile. paths lets the TUI reload the
@@ -62,6 +71,8 @@ type model struct {
 	ta          textarea.Model
 	loadProfile string       // target profile for the load
 	loadParsed  creds.Parsed // parsed creds awaiting confirmation
+	nameInput   string       // buffer for the new profile name (loadName step)
+	typeCursor  int          // selected row in the type menu (loadType step)
 
 	// delete-profile flow: non-empty while the confirmation prompt is shown.
 	deleteTarget string
@@ -156,6 +167,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// The load flow captures input while active.
 		switch m.loadStep {
+		case loadType:
+			return m.handleTypeKey(msg)
+		case loadName:
+			return m.handleNameKey(msg)
 		case loadPaste:
 			return m.handlePasteKey(msg)
 		case loadConfirm:
@@ -164,6 +179,86 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	}
 	return m, nil
+}
+
+// handleTypeKey drives the type menu (loadType step): up/down or 1-4 to pick,
+// enter to select, esc to cancel. Manual continues in-TUI; the others hand off
+// to the CLI wizard.
+func (m *model) handleTypeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	types := addableTypes()
+	switch s := msg.String(); s {
+	case "esc", "q":
+		m.endLoad()
+		m.message = "alta cancelada"
+		return m, nil
+	case "up", "k":
+		m.typeCursor = (m.typeCursor - 1 + len(types)) % len(types)
+		return m, nil
+	case "down", "j":
+		m.typeCursor = (m.typeCursor + 1) % len(types)
+		return m, nil
+	case "1", "2", "3", "4":
+		if i := int(s[0] - '1'); i < len(types) {
+			return m.selectAddType(types[i])
+		}
+		return m, nil
+	case "enter":
+		return m.selectAddType(types[m.typeCursor])
+	}
+	return m, nil
+}
+
+// selectAddType routes a chosen profile type. Manual moves to the name step
+// (then the paste textarea); sso/saml/role suspend into the CLI `add` wizard
+// via runSelf.
+func (m *model) selectAddType(t profiles.Type) (tea.Model, tea.Cmd) {
+	if t == profiles.TypeManual {
+		m.loadStep = loadName
+		m.nameInput = ""
+		m.loadProfile = ""
+		m.message = ""
+		return m, nil
+	}
+	m.endLoad()
+	return m.runSelf("add", "--type", string(t))
+}
+
+// handleNameKey captures the new profile's name (loadName step): esc cancels,
+// enter validates non-empty + non-duplicate and moves to the paste textarea,
+// everything else (including a literal "d") edits the name buffer.
+func (m *model) handleNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.endLoad()
+		m.message = "alta cancelada"
+		return m, nil
+	case "enter":
+		name := strings.TrimSpace(m.nameInput)
+		if name == "" {
+			m.message = "el nombre no puede estar vacío"
+			return m, nil
+		}
+		if _, ok := profiles.Find(m.profiles, name); ok {
+			m.message = "ya existe un profile llamado " + name
+			return m, nil
+		}
+		m.loadProfile = name
+		m.loadStep = loadPaste
+		m.ta.Reset()
+		m.ta.Focus()
+		m.message = ""
+		return m, textarea.Blink
+	case "backspace":
+		if len(m.nameInput) > 0 {
+			m.nameInput = m.nameInput[:len(m.nameInput)-1]
+		}
+		return m, nil
+	default:
+		if len(msg.String()) == 1 {
+			m.nameInput += msg.String()
+		}
+		return m, nil
+	}
 }
 
 // handlePasteKey routes keys while the paste textarea is open: esc cancels,
@@ -239,7 +334,12 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		return m.doLogin()
 	case "a":
-		return m.runSelf("add")
+		// Add a profile: pick the type first. Manual continues in-TUI via the
+		// name -> paste flow; sso/saml/role hand off to the CLI wizard.
+		m.loadStep = loadType
+		m.typeCursor = 0
+		m.message = ""
+		return m, nil
 	case "t":
 		return m.runSelf("set-type")
 	case "l":
@@ -373,16 +473,17 @@ func (m *model) doLogin() (tea.Model, tea.Cmd) {
 	})
 }
 
-// runSelf suspends the TUI and runs this awsm binary's subcommand interactively
-// (the add / set-type wizard), then reloads on return. set-type targets the
-// selected profile.
-func (m *model) runSelf(sub string) (tea.Model, tea.Cmd) {
+// runSelf suspends the TUI and runs this awsm binary's subcommand
+// interactively (the add / set-type wizard), then reloads on return.
+// set-type targets the selected profile; extra args (e.g. "--type", "sso")
+// are appended for the add wizard's non-manual types.
+func (m *model) runSelf(sub string, extraArgs ...string) (tea.Model, tea.Cmd) {
 	self, err := os.Executable()
 	if err != nil {
 		m.message = "cannot locate awsm binary: " + err.Error()
 		return m, nil
 	}
-	args := []string{sub}
+	args := append([]string{sub}, extraArgs...)
 	if sub == "set-type" {
 		p, ok := m.selected()
 		if !ok {
@@ -390,9 +491,13 @@ func (m *model) runSelf(sub string) (tea.Model, tea.Cmd) {
 		}
 		args = append(args, p.Name)
 	}
+	action := sub
+	if len(extraArgs) > 0 {
+		action = sub + " " + strings.Join(extraArgs, " ")
+	}
 	c := execCommand(self, args)
 	return m, tea.ExecProcess(c, func(err error) tea.Msg {
-		return reloadMsg{action: sub, err: err}
+		return reloadMsg{action: action, err: err}
 	})
 }
 
@@ -446,6 +551,8 @@ func (m *model) endLoad() {
 	m.ta.Reset()
 	m.loadProfile = ""
 	m.loadParsed = creds.Parsed{}
+	m.nameInput = ""
+	m.typeCursor = 0
 }
 
 func last4(s string) string {

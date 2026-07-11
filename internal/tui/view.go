@@ -32,6 +32,10 @@ func (m *model) View() string {
 	}
 	// The load flow takes over the whole screen.
 	switch m.loadStep {
+	case loadType:
+		return m.typeView()
+	case loadName:
+		return m.nameView()
 	case loadPaste:
 		return m.pasteView()
 	case loadConfirm:
@@ -94,6 +98,47 @@ func (m *model) deleteConfirmView() string {
 	b.WriteString(dimStyle.Render("  this removes the profile from credentials & config and clears its override") + "\n\n")
 	b.WriteString(promptStyle.Render(fmt.Sprintf("Delete %s? [y/n]", name)) + "\n")
 	b.WriteString(helpStyle.Render("y confirm · n / esc cancel"))
+	return b.String()
+}
+
+// typeView is the type menu shown when adding a profile (loadType step).
+func (m *model) typeView() string {
+	labels := []string{
+		"manual  — static keys / temporary creds (pegás el bloque de AWS)",
+		"sso     — IAM Identity Center",
+		"saml    — saml2aws",
+		"role    — assume-role",
+	}
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Nuevo profile — tipo") + "\n\n")
+	for i, label := range labels {
+		cursor := "  "
+		render := label
+		if i == m.typeCursor {
+			cursor = cursorStyle.Render("▸ ")
+			render = selectedStyle.Render(label)
+		}
+		b.WriteString(fmt.Sprintf("%s%d. %s\n", cursor, i+1, render))
+	}
+	b.WriteString("\n")
+	if m.message != "" {
+		b.WriteString(promptStyle.Render(m.message) + "\n")
+	}
+	b.WriteString(helpStyle.Render("↑/↓ elegir · 1-4 · enter seleccionar · esc cancelar"))
+	return b.String()
+}
+
+// nameView is the first step of creating a manual profile: typing its name
+// (loadName step).
+func (m *model) nameView() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Nuevo profile manual") + "\n\n")
+	b.WriteString(dimStyle.Render("Nombre del profile:") + "\n\n")
+	b.WriteString("  " + promptStyle.Render(m.nameInput+"_") + "\n\n")
+	if m.message != "" {
+		b.WriteString(promptStyle.Render(m.message) + "\n")
+	}
+	b.WriteString(helpStyle.Render("enter continuar · esc cancelar"))
 	return b.String()
 }
 
