@@ -26,17 +26,18 @@ This spec supersedes `docs/specs/2026-07-08/spec-awsm-add-paste-manual.md` (WIP 
 - **Pipeable**: `awsm add dev --type manual < creds.txt` works; with no console available (`prompt.ErrNoTTY`) the confirmation is skipped with a notice, matching `load-credentials`.
 - **TUI** `a`: pick the profile type first; for **manual**, create natively in two steps — (1) type the new profile name, (2) the existing paste textarea (`loadPaste` → `loadConfirm`) reused verbatim, storing the result with `type = manual`. Choosing **sso/saml/role** suspends into the CLI wizard preset to that type, so the TUI keeps creating every profile type.
 - Extract the shared "read block → parse → preview → confirm" logic out of `cmd/loadcreds.go` so `add` and `load-credentials` cannot drift.
+- Fix `creds.Parse` so a quoted value that arrives line-wrapped (open quote with no close on the same line) is re-joined to its original value instead of silently truncated. *(Added during implementation: the truncation was reproduced as a pre-existing bug that also affected `load-credentials`; without it AC1 could not be met.)*
 - Preserve both security invariants: secrets/tokens are never printed (only `****last4`), and stdout stays eval-safe (all interaction on stderr / the console).
 
 ### Non-goals
 - No clipboard integration — `internal/clipboard` was removed in PR #6 and stays removed.
 - No changes to SSO / SAML / role entry; those stay field-by-field in the CLI wizard.
 - No changes to `profiles.AddManual` or the on-disk format.
-- No change to `load-credentials` behavior (only refactoring its body into a shared helper).
+- No change to `load-credentials` command flow (only refactoring its body into a shared helper). It does inherit the `creds.Parse` wrapped-value fix — a strict improvement, not a flow change.
 
 ## 3. Acceptance Criteria
 
-- [ ] AC1: Given a valid AWS block piped or pasted, `awsm add dev --type manual` parses it, previews `key ****XXXX` + temporary/long-term + region on stderr, and on confirm writes access key id, secret and session token (when present) + region to `~/.aws/credentials` (mode `0600`), pins `dev` as manual — with the full session token stored intact, embedded newlines included.
+- [ ] AC1: Given a valid AWS block piped or pasted, `awsm add dev --type manual` parses it, previews `key ****XXXX` + temporary/long-term + region on stderr, and on confirm writes access key id, secret and session token (when present) + region to `~/.aws/credentials` (mode `0600`), pins `dev` as manual — with the full session token stored intact. A quoted token that arrives line-wrapped in the paste (the newline was inserted by the copy, not part of the value) is reconstructed to its original single-line value.
 - [ ] AC2: Given an empty paste (immediate EOF), the wizard falls back to the existing field-by-field entry and completes as today (existing tests stay green).
 - [ ] AC3: Given a non-empty but unparseable paste, the command errors out with a hint (mirroring `load-credentials`) — it does not silently fall through to field-by-field with a half-consumed paste.
 - [ ] AC4: Given input larger than 1 MiB, the command refuses to parse it (same bound and message pattern as `load-credentials`).
@@ -58,6 +59,10 @@ Extract the body of `load-credentials` — bounded read (`io.LimitReader`, 1 MiB
 3. On parse success: preview + confirm + `profiles.AddManual` + `SetOverride(manual)`, reporting `stored profile %q (manual, <kind>, key ****XXXX) [mode 0600]` via `w.errf`.
 
 The field-by-field fallback keeps reading from the wizard's `bufio.Reader` over `cmd.InOrStdin()`; on a real terminal a Ctrl+D EOF ends the pending read but the TTY remains readable for the subsequent prompts, and in tests the seam is fed explicitly.
+
+### Parser (`internal/creds/`)
+
+`Parse` pre-processes the split lines with a `joinWrappedValues` pass: a `KEY="VALUE…` line whose opening quote (single or double) does not close on the same line is concatenated with the following lines — newlines and edge whitespace dropped, since the wrap inserted them — until the closing quote appears. A quote that never closes leaves the lines untouched, so malformed input degrades to the previous per-line behavior instead of swallowing the rest of the block. Unquoted wrapped values are out of scope (no delimiter marks the continuation; joining would be guesswork).
 
 ### TUI (`internal/tui/`)
 

@@ -92,3 +92,82 @@ export AWS_SECRET_ACCESS_KEY="sec"
 		t.Errorf("got %q", p.AccessKeyID)
 	}
 }
+
+func TestParse_rejoins_wrapped_quoted_token(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"export-two-fragments", `
+export AWS_ACCESS_KEY_ID="ASIAEXAMPLE0001"
+export AWS_SECRET_ACCESS_KEY="secretvalue001"
+export AWS_SESSION_TOKEN="tokenpart1
+tokenpart2"`},
+		{"export-three-fragments", `
+export AWS_ACCESS_KEY_ID="ASIAEXAMPLE0001"
+export AWS_SECRET_ACCESS_KEY="secretvalue001"
+export AWS_SESSION_TOKEN="tokenpa
+rt1token
+part2"`},
+		{"powershell-single-quotes", `
+$env:AWS_ACCESS_KEY_ID="ASIAEXAMPLE0001"
+$env:AWS_SECRET_ACCESS_KEY="secretvalue001"
+$env:AWS_SESSION_TOKEN='tokenpart1
+tokenpart2'`},
+		{"ini-wrapped", `
+[dev]
+aws_access_key_id = ASIAEXAMPLE0001
+aws_secret_access_key = secretvalue001
+aws_session_token = "tokenpart1
+tokenpart2"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := Parse(tc.input)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			want := "tokenpart1tokenpart2"
+			if p.SessionToken != want {
+				t.Errorf("session token: got %q want %q", p.SessionToken, want)
+			}
+			if p.AccessKeyID != "ASIAEXAMPLE0001" || p.SecretAccessKey != "secretvalue001" {
+				t.Errorf("other fields disturbed: %+v", p)
+			}
+		})
+	}
+}
+
+func TestParse_wrapped_secret_also_rejoined(t *testing.T) {
+	in := `
+export AWS_ACCESS_KEY_ID="ASIAEXAMPLE0001"
+export AWS_SECRET_ACCESS_KEY="secretpart1
+secretpart2"
+export AWS_SESSION_TOKEN="tokenvalue001"`
+	p, err := Parse(in)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if p.SecretAccessKey != "secretpart1secretpart2" {
+		t.Errorf("secret: got %q", p.SecretAccessKey)
+	}
+	if p.SessionToken != "tokenvalue001" {
+		t.Errorf("token after a joined value: got %q", p.SessionToken)
+	}
+}
+
+func TestParse_unclosed_quote_degrades_to_per_line(t *testing.T) {
+	// The quote never closes: the malformed line must not swallow the rest of
+	// the block, and the fields on the following lines still parse.
+	in := `
+export AWS_SESSION_TOKEN="neverclosed
+export AWS_ACCESS_KEY_ID=ASIAEXAMPLE0001
+export AWS_SECRET_ACCESS_KEY=secretvalue001`
+	p, err := Parse(in)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if p.AccessKeyID != "ASIAEXAMPLE0001" || p.SecretAccessKey != "secretvalue001" {
+		t.Errorf("fields after the malformed line lost: %+v", p)
+	}
+}
