@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Lukeneo12/awsm/internal/auth"
 	"github.com/Lukeneo12/awsm/internal/creds"
@@ -197,13 +198,14 @@ func (m *model) handleTypeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		m.typeCursor = (m.typeCursor + 1) % len(types)
 		return m, nil
-	case "1", "2", "3", "4":
-		if i := int(s[0] - '1'); i < len(types) {
-			return m.selectAddType(types[i])
-		}
-		return m, nil
 	case "enter":
 		return m.selectAddType(types[m.typeCursor])
+	default:
+		// Digit shortcuts follow addableTypes()'s length (assumed ≤ 9, like
+		// the typeView hint) so adding a type can't desynchronize them.
+		if len(s) == 1 && s[0] >= '1' && s[0] < '1'+byte(len(types)) {
+			return m.selectAddType(types[s[0]-'1'])
+		}
 	}
 	return m, nil
 }
@@ -249,16 +251,24 @@ func (m *model) handleNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.message = ""
 		return m, textarea.Blink
 	case "backspace":
-		if len(m.nameInput) > 0 {
-			m.nameInput = m.nameInput[:len(m.nameInput)-1]
-		}
+		m.nameInput = trimLastRune(m.nameInput)
 		return m, nil
 	default:
-		if len(msg.String()) == 1 {
+		if utf8.RuneCountInString(msg.String()) == 1 {
 			m.nameInput += msg.String()
 		}
 		return m, nil
 	}
+}
+
+// trimLastRune drops the final rune (not byte) from s, so backspace can never
+// leave a broken UTF-8 tail behind a multi-byte character.
+func trimLastRune(s string) string {
+	if s == "" {
+		return s
+	}
+	_, size := utf8.DecodeLastRuneInString(s)
+	return s[:len(s)-size]
 }
 
 // handlePasteKey routes keys while the paste textarea is open: esc cancels,
@@ -386,13 +396,11 @@ func (m *model) handleFilterKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		}
 		return nil, true
 	case "backspace":
-		if len(m.filter) > 0 {
-			m.filter = m.filter[:len(m.filter)-1]
-		}
+		m.filter = trimLastRune(m.filter)
 		m.applyFilter()
 		return nil, true
 	default:
-		if len(msg.String()) == 1 {
+		if utf8.RuneCountInString(msg.String()) == 1 {
 			m.filter += msg.String()
 			m.applyFilter()
 			return nil, true
