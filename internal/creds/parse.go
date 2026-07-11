@@ -81,7 +81,11 @@ func joinWrappedValues(lines []string) []string {
 			out = append(out, lines[i])
 			continue
 		}
-		joined := stripped
+		// Accumulate in a Builder: += in a loop is quadratic, and a crafted
+		// paste of many short fragments inside one quote (bounded only by the
+		// 1 MiB read cap) would burn seconds of memcpy.
+		var joined strings.Builder
+		joined.WriteString(stripped)
 		closed := false
 		j := i + 1
 		for ; j < len(lines); j++ {
@@ -90,17 +94,17 @@ func joinWrappedValues(lines []string) []string {
 			// stray comment, shell noise) is not part of the value, and
 			// keeping it would defeat unquote's surrounding-pair strip.
 			if k := strings.IndexByte(frag, q); k >= 0 {
-				joined += frag[:k+1]
+				joined.WriteString(frag[:k+1])
 				closed = true
 				break
 			}
-			joined += frag
+			joined.WriteString(frag)
 		}
 		if !closed {
 			out = append(out, lines[i])
 			continue
 		}
-		out = append(out, joined)
+		out = append(out, joined.String())
 		i = j
 	}
 	return out
