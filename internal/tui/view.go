@@ -101,17 +101,28 @@ func (m *model) deleteConfirmView() string {
 	return b.String()
 }
 
+// typeLabel is the menu line for each addable type, keyed by the type itself
+// so the menu can never drift from addableTypes()'s order.
+func typeLabel(t profiles.Type) string {
+	switch t {
+	case profiles.TypeManual:
+		return "manual  — static keys / temporary creds (pegás el bloque de AWS)"
+	case profiles.TypeSSO:
+		return "sso     — IAM Identity Center"
+	case profiles.TypeSAML:
+		return "saml    — saml2aws"
+	case profiles.TypeRole:
+		return "role    — assume-role"
+	}
+	return string(t)
+}
+
 // typeView is the type menu shown when adding a profile (loadType step).
 func (m *model) typeView() string {
-	labels := []string{
-		"manual  — static keys / temporary creds (pegás el bloque de AWS)",
-		"sso     — IAM Identity Center",
-		"saml    — saml2aws",
-		"role    — assume-role",
-	}
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Nuevo profile — tipo") + "\n\n")
-	for i, label := range labels {
+	for i, t := range addableTypes() {
+		label := typeLabel(t)
 		cursor := "  "
 		render := label
 		if i == m.typeCursor {
