@@ -531,15 +531,18 @@ func TestDeleteConfirm_error_shows_message_and_keeps_running(t *testing.T) {
 	m.paths = paths
 	m.deleteTarget = "beta"
 
+	// A reload is attempted even on error, but this fixture breaks reads too
+	// (credentials is a directory), so reload fails and yields a nil cmd with
+	// its own failure message.
 	_, cmd := m.Update(key("y"))
 	if cmd != nil {
-		t.Error("expected no reload command on error")
+		t.Error("expected a nil command when the post-error reload cannot read the fixture")
 	}
 	if m.deleteTarget != "" {
 		t.Error("deleteTarget should be cleared even on error")
 	}
-	if !contains(m.message, "error") {
-		t.Errorf("expected an error message, got %q", m.message)
+	if !contains(m.message, "fail") && !contains(m.message, "error") {
+		t.Errorf("expected an error/failure message, got %q", m.message)
 	}
 	// TUI keeps running: further keys are still processed normally.
 	_, cmd = m.Update(key("r"))
