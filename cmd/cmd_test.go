@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -9,7 +10,30 @@ import (
 	"github.com/Lukeneo12/awsm/internal/profiles"
 	"github.com/Lukeneo12/awsm/internal/prompt"
 	"github.com/Lukeneo12/awsm/internal/runner"
+	"gopkg.in/ini.v1"
 )
+
+// eofThenReader simulates a live terminal's EOF semantics for tests: the
+// first Read returns an immediate (0, io.EOF) -- as if the user pressed the
+// EOF key on an empty line, submitting an empty paste -- and every call after
+// that serves bytes from rest. A plain strings.Reader/bytes.Reader EOFs
+// permanently once drained and cannot represent "empty paste, then more
+// input"; addManual's paste-then-fallback path needs exactly that sequence,
+// and relies on bufio.Reader retrying the underlying reader after an EOF
+// (bufio.Reader clears its cached error once it has been returned), which is
+// what makes a real TTY's Ctrl+D-then-keep-typing behavior work too.
+type eofThenReader struct {
+	usedEOF bool
+	rest    io.Reader
+}
+
+func (r *eofThenReader) Read(p []byte) (int, error) {
+	if !r.usedEOF {
+		r.usedEOF = true
+		return 0, io.EOF
+	}
+	return r.rest.Read(p)
+}
 
 func testApp(r runner.CommandRunner) *app {
 	return &app{
@@ -96,9 +120,10 @@ func TestAddManualWizardAndRm_roundtrip(t *testing.T) {
 		runner: runner.NewFake(),
 	}
 
-	// Wizard (manual) reads: access key id, secret, session token, region.
+	// An empty paste (immediate EOF) falls back to the field-by-field wizard:
+	// access key id, secret, session token, region.
 	add := a.addCmd()
-	add.SetIn(strings.NewReader("ASIATEST00009999\ntopsecretvalue\n\nus-east-2\n"))
+	add.SetIn(&eofThenReader{rest: strings.NewReader("ASIATEST00009999\ntopsecretvalue\n\nus-east-2\n")})
 	add.SetArgs([]string{"newprof", "--type", "manual"})
 	if err := add.Execute(); err != nil {
 		t.Fatalf("add error: %v", err)
@@ -136,9 +161,10 @@ func TestRmCmd_fully_forgets_profile(t *testing.T) {
 		runner: runner.NewFake(),
 	}
 
-	// add a manual profile (writes credentials + config region + override)
+	// add a manual profile via the field-by-field fallback (empty paste)
+	// (writes credentials + config region + override)
 	add := a.addCmd()
-	add.SetIn(strings.NewReader("ASIA0001\nsecret\n\nus-east-1\n"))
+	add.SetIn(&eofThenReader{rest: strings.NewReader("ASIA0001\nsecret\n\nus-east-1\n")})
 	add.SetArgs([]string{"temp", "--type", "manual"})
 	if err := add.Execute(); err != nil {
 		t.Fatal(err)
@@ -454,6 +480,201 @@ func TestLoadCredsCmd_rejects_oversized_input(t *testing.T) {
 	list, _ := profiles.List(a.paths)
 	if _, ok := profiles.Find(list, "too-big"); ok {
 		t.Error("oversized input must not write a profile")
+	}
+}
+
+// addManualApp builds an app wired to a temp dir, mirroring loadApp, so the
+// add --type manual paste tests can inject a and confirm the same way the
+// load-credentials tests do.
+func addManualApp(t *testing.T, confirm func(string) (bool, error)) *app {
+	t.Helper()
+	dir := t.TempDir()
+	return &app{
+		paths: profiles.Paths{
+			Credentials: filepath.Join(dir, "credentials"),
+			Config:      filepath.Join(dir, "config"),
+			Overrides:   filepath.Join(dir, "profiles.ini"),
+		},
+		runner:  runner.NewFake(),
+		confirm: confirm,
+	}
+}
+
+// storedSessionToken reads the raw aws_session_token value straight out of
+// the credentials ini file, bypassing profiles.List's masked view, so tests
+// can assert the token was stored byte-for-byte intact.
+func storedSessionToken(t *testing.T, credentialsPath, profile string) string {
+	t.Helper()
+	f, err := ini.Load(credentialsPath)
+	if err != nil {
+		t.Fatalf("reading credentials file: %v", err)
+	}
+	sec, err := f.GetSection(profile)
+	if err != nil {
+		t.Fatalf("section %q missing: %v", profile, err)
+	}
+	return sec.Key("aws_session_token").String()
+}
+
+// AC1: a valid paste, including a long session token, is parsed, previewed
+// and stored intact on confirm.
+func TestAddManualCmd_valid_paste_stores_session_token_intact(t *testing.T) {
+	a := addManualApp(t, func(string) (bool, error) { return true, nil })
+	longToken := "IQoJb3JpZ2luX2VjE" + strings.Repeat("aB3", 200) + "ZXhhbXBsZXRva2VuZW5k"
+
+	add := a.addCmd()
+	add.SetIn(strings.NewReader(
+		"export AWS_ACCESS_KEY_ID=\"ASIAEXAMPLE9999\"\n" +
+			"export AWS_SECRET_ACCESS_KEY=\"thesecret\"\n" +
+			"export AWS_SESSION_TOKEN=\"" + longToken + "\"\n" +
+			"export AWS_DEFAULT_REGION=\"us-east-1\"\n"))
+	add.SetArgs([]string{"dev", "--type", "manual"})
+	if err := add.Execute(); err != nil {
+		t.Fatalf("add error: %v", err)
+	}
+
+	list, _ := profiles.List(a.paths)
+	p, ok := profiles.Find(list, "dev")
+	if !ok || p.Type != profiles.TypeManual {
+		t.Fatalf("expected dev manual, got %+v (ok=%v)", p, ok)
+	}
+	if p.AccessKeyIDMasked != "****9999" {
+		t.Errorf("masked key: got %q", p.AccessKeyIDMasked)
+	}
+	if got := storedSessionToken(t, a.paths.Credentials, "dev"); got != longToken {
+		t.Errorf("session token not stored intact:\n got  %q\n want %q", got, longToken)
+	}
+}
+
+// AC2: an empty paste (immediate EOF) falls back to the field-by-field
+// wizard, unchanged.
+func TestAddManualCmd_empty_paste_falls_back_to_field_by_field(t *testing.T) {
+	a := addManualApp(t, nil)
+
+	add := a.addCmd()
+	add.SetIn(&eofThenReader{rest: strings.NewReader("ASIAFIELDS0001\nfieldsecret\n\nus-west-2\n")})
+	add.SetArgs([]string{"fields-prof", "--type", "manual"})
+	if err := add.Execute(); err != nil {
+		t.Fatalf("add error: %v", err)
+	}
+
+	list, _ := profiles.List(a.paths)
+	p, ok := profiles.Find(list, "fields-prof")
+	if !ok || p.Type != profiles.TypeManual {
+		t.Fatalf("expected fields-prof manual, got %+v (ok=%v)", p, ok)
+	}
+	if p.AccessKeyIDMasked != "****0001" {
+		t.Errorf("masked key: got %q", p.AccessKeyIDMasked)
+	}
+}
+
+// AC3: a non-empty but unparseable paste errors and does not fall back to
+// field-by-field with a half-consumed paste.
+func TestAddManualCmd_unparseable_paste_errors_and_writes_nothing(t *testing.T) {
+	a := addManualApp(t, func(string) (bool, error) { return true, nil })
+
+	add := a.addCmd()
+	add.SetIn(strings.NewReader("this is not a credentials block at all"))
+	add.SetArgs([]string{"bad-paste", "--type", "manual"})
+	if err := add.Execute(); err == nil {
+		t.Fatal("expected error for unparseable paste")
+	}
+
+	list, _ := profiles.List(a.paths)
+	if _, ok := profiles.Find(list, "bad-paste"); ok {
+		t.Error("unparseable paste must not write a profile")
+	}
+}
+
+// AC4: input larger than 1 MiB is refused before parsing or writing.
+func TestAddManualCmd_rejects_oversized_paste(t *testing.T) {
+	a := addManualApp(t, func(string) (bool, error) { return true, nil })
+
+	big := "export AWS_ACCESS_KEY_ID=AKIA1234\nexport AWS_SECRET_ACCESS_KEY=s\n" +
+		strings.Repeat("#", 1<<20)
+	add := a.addCmd()
+	add.SetIn(strings.NewReader(big))
+	add.SetArgs([]string{"too-big", "--type", "manual"})
+	if err := add.Execute(); err == nil {
+		t.Fatal("expected error for oversized paste")
+	}
+
+	list, _ := profiles.List(a.paths)
+	if _, ok := profiles.Find(list, "too-big"); ok {
+		t.Error("oversized paste must not write a profile")
+	}
+}
+
+// AC5: an explicit decline on the console writes nothing.
+func TestAddManualCmd_decline_confirm_writes_nothing(t *testing.T) {
+	a := addManualApp(t, func(string) (bool, error) { return false, nil })
+
+	add := a.addCmd()
+	add.SetIn(strings.NewReader(
+		"export AWS_ACCESS_KEY_ID=ASIA9999\nexport AWS_SECRET_ACCESS_KEY=s\n"))
+	add.SetArgs([]string{"declined", "--type", "manual"})
+	if err := add.Execute(); err != nil {
+		t.Fatalf("add error: %v", err)
+	}
+
+	list, _ := profiles.List(a.paths)
+	if _, ok := profiles.Find(list, "declined"); ok {
+		t.Error("declining should write nothing")
+	}
+}
+
+// AC5: with no console available (prompt.ErrNoTTY), the save proceeds with a
+// notice instead of blocking.
+func TestAddManualCmd_non_interactive_auto_confirms(t *testing.T) {
+	a := addManualApp(t, func(string) (bool, error) { return false, prompt.ErrNoTTY })
+
+	add := a.addCmd()
+	var errBuf bytes.Buffer
+	add.SetErr(&errBuf)
+	add.SetIn(strings.NewReader(
+		"export AWS_ACCESS_KEY_ID=AKIA1234\nexport AWS_SECRET_ACCESS_KEY=s\n"))
+	add.SetArgs([]string{"ci-prof", "--type", "manual"})
+	if err := add.Execute(); err != nil {
+		t.Fatalf("add error: %v", err)
+	}
+
+	list, _ := profiles.List(a.paths)
+	if p, ok := profiles.Find(list, "ci-prof"); !ok || p.Type != profiles.TypeManual {
+		t.Fatalf("non-interactive run should save, got ok=%v", ok)
+	}
+	if !strings.Contains(errBuf.String(), "non-interactive: saved without confirmation") {
+		t.Errorf("missing non-interactive notice: %q", errBuf.String())
+	}
+}
+
+// AC6: the secret and session token are never printed (stdout or stderr);
+// stdout stays eval-safe. Mirrors TestLoadCredsCmd_does_not_leak_secret.
+func TestAddManualCmd_does_not_leak_secret(t *testing.T) {
+	a := addManualApp(t, func(string) (bool, error) { return true, nil })
+
+	add := a.addCmd()
+	var errBuf, outBuf bytes.Buffer
+	add.SetErr(&errBuf)
+	add.SetOut(&outBuf)
+	add.SetIn(strings.NewReader(
+		"export AWS_ACCESS_KEY_ID=\"ASIAEXAMPLE9999\"\n" +
+			"export AWS_SECRET_ACCESS_KEY=\"thesecret\"\n" +
+			"export AWS_SESSION_TOKEN=\"thetoken\"\n" +
+			"export AWS_DEFAULT_REGION=\"us-east-1\"\n"))
+	add.SetArgs([]string{"dino-dev", "--type", "manual"})
+	if err := add.Execute(); err != nil {
+		t.Fatalf("add error: %v", err)
+	}
+
+	errOut := errBuf.String()
+	if strings.Contains(errOut, "thesecret") || strings.Contains(errOut, "thetoken") {
+		t.Errorf("secret/session token leaked to stderr: %q", errOut)
+	}
+	if !strings.Contains(errOut, "****9999") {
+		t.Errorf("masked key preview missing from stderr: %q", errOut)
+	}
+	if outBuf.Len() != 0 {
+		t.Errorf("stdout must stay eval-safe (empty), got %q", outBuf.String())
 	}
 }
 
