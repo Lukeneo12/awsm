@@ -10,5 +10,8 @@ coverage.out
 .DS_Store
 *.swp
 
+# Claude Code local session data
+.claude/
+
 # GoReleaser output
 /dist/
