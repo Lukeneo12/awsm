@@ -57,14 +57,16 @@ type Checker struct {
 	HasSessionToken func(profile string) bool
 }
 
-// NewChecker returns a Checker with sane defaults.
-func NewChecker(r runner.CommandRunner) *Checker {
+// NewChecker returns a Checker with sane defaults. paths must be the same
+// Paths the profile list was discovered from, so classification reads the
+// files it describes.
+func NewChecker(r runner.CommandRunner, paths profiles.Paths) *Checker {
 	return &Checker{
 		Runner:      r,
 		Concurrency: defaultConcurrency,
 		Timeout:     defaultTimeout,
 		HasSessionToken: func(name string) bool {
-			return profiles.HasSessionToken(profiles.DefaultPaths(), name)
+			return profiles.HasSessionToken(paths, name)
 		},
 	}
 }
@@ -151,7 +153,9 @@ var expiredMarkers = []string{
 // credentials (session token on disk): a stale-enough temporary session stops
 // being recognized by STS at all, which answers InvalidClientTokenId instead of
 // ExpiredToken. For long-term keys the same error means genuinely
-// bad/deactivated keys and must stay invalid.
+// bad/deactivated keys and must stay invalid. Both fragments currently appear
+// in the same CLI message; the second is deliberate redundancy against wording
+// changes, mirroring the overlaps in expiredMarkers.
 var tempCredsExpiredMarkers = []string{
 	"invalidclienttokenid",
 	"security token included in the request is invalid",
