@@ -2,6 +2,7 @@ package status
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/Lukeneo12/awsm/internal/profiles"
@@ -52,6 +53,63 @@ func TestCheck_should_report_invalid_on_other_failure(t *testing.T) {
 	c := NewChecker(f)
 
 	st := c.Check(context.Background(), profiles.Profile{Name: "bad"})
+
+	if st.State != StateInvalid {
+		t.Fatalf("state: got %q want invalid", st.State)
+	}
+}
+
+// invalidClientTokenStderr is the verbatim AWS CLI error for a security token
+// STS no longer recognizes — what a long-expired temporary session gets,
+// instead of ExpiredToken.
+const invalidClientTokenStderr = "aws: [ERROR]: An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation: The security token included in the request is invalid"
+
+func TestCheck_should_classify_unrecognized_token_by_credential_shape(t *testing.T) {
+	// Arrange: the session-token lookup reads the shared fixture, where
+	// base-saml holds temporary creds (session token) and static-keys holds
+	// long-term keys; missing-entry has no credentials section at all.
+	fixturePaths := profiles.Paths{
+		Credentials: filepath.Join("..", "..", "testdata", "credentials"),
+	}
+	cases := []struct {
+		name    string
+		profile string
+		want    State
+	}{
+		{"expired_when_session_token_present", "base-saml", StateExpired},
+		{"invalid_when_longterm_keys", "static-keys", StateInvalid},
+		{"invalid_when_no_credentials_entry", "missing-entry", StateInvalid},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := runner.NewFake()
+			f.DefaultResult = runner.Result{
+				ExitCode: 254,
+				Stderr:   []byte(invalidClientTokenStderr),
+			}
+			c := NewChecker(f)
+			c.HasSessionToken = func(name string) bool {
+				return profiles.HasSessionToken(fixturePaths, name)
+			}
+
+			// Act
+			st := c.Check(context.Background(), profiles.Profile{Name: tc.profile})
+
+			// Assert
+			if st.State != tc.want {
+				t.Fatalf("state: got %q want %q", st.State, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheck_should_report_invalid_when_session_token_lookup_is_nil(t *testing.T) {
+	f := runner.NewFake()
+	f.DefaultResult = runner.Result{ExitCode: 254, Stderr: []byte(invalidClientTokenStderr)}
+	c := NewChecker(f)
+	c.HasSessionToken = nil
+
+	st := c.Check(context.Background(), profiles.Profile{Name: "any"})
 
 	if st.State != StateInvalid {
 		t.Fatalf("state: got %q want invalid", st.State)

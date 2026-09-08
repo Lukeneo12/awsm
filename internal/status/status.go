@@ -50,11 +50,23 @@ type Checker struct {
 	Runner      runner.CommandRunner
 	Concurrency int
 	Timeout     time.Duration
+	// HasSessionToken reports whether the profile's on-disk credentials carry
+	// a session token (temporary creds). Consulted at check time — not cached
+	// on the Profile — so a load-credentials between refreshes is reflected.
+	// Nil means false.
+	HasSessionToken func(profile string) bool
 }
 
 // NewChecker returns a Checker with sane defaults.
 func NewChecker(r runner.CommandRunner) *Checker {
-	return &Checker{Runner: r, Concurrency: defaultConcurrency, Timeout: defaultTimeout}
+	return &Checker{
+		Runner:      r,
+		Concurrency: defaultConcurrency,
+		Timeout:     defaultTimeout,
+		HasSessionToken: func(name string) bool {
+			return profiles.HasSessionToken(profiles.DefaultPaths(), name)
+		},
+	}
 }
 
 // Check verifies a single profile by calling sts get-caller-identity.
@@ -77,7 +89,8 @@ func (c *Checker) Check(ctx context.Context, p profiles.Profile) Status {
 		return st
 	}
 	if res.ExitCode != 0 {
-		st.State = classifyFailure(res.Stderr)
+		tempCreds := c.HasSessionToken != nil && c.HasSessionToken(p.Name)
+		st.State = classifyFailure(res.Stderr, tempCreds)
 		st.Detail = firstLine(res.Stderr)
 		return st
 	}
@@ -134,13 +147,31 @@ var expiredMarkers = []string{
 	"forbiddenexception",
 }
 
+// tempCredsExpiredMarkers mean "expired" only when the profile holds temporary
+// credentials (session token on disk): a stale-enough temporary session stops
+// being recognized by STS at all, which answers InvalidClientTokenId instead of
+// ExpiredToken. For long-term keys the same error means genuinely
+// bad/deactivated keys and must stay invalid.
+var tempCredsExpiredMarkers = []string{
+	"invalidclienttokenid",
+	"security token included in the request is invalid",
+}
+
 // classifyFailure inspects stderr to distinguish an expired/absent session from
-// other failures. SSO and SAML sessions surface recognizable token errors.
-func classifyFailure(stderr []byte) State {
+// other failures. SSO and SAML sessions surface recognizable token errors;
+// tempCreds widens the match for profiles whose credentials are temporary.
+func classifyFailure(stderr []byte, tempCreds bool) State {
 	s := strings.ToLower(string(stderr))
 	for _, m := range expiredMarkers {
 		if strings.Contains(s, m) {
 			return StateExpired
+		}
+	}
+	if tempCreds {
+		for _, m := range tempCredsExpiredMarkers {
+			if strings.Contains(s, m) {
+				return StateExpired
+			}
 		}
 	}
 	return StateInvalid

@@ -256,6 +256,22 @@ func maskKey(id string) string {
 	return "****" + id[len(id)-4:]
 }
 
+// HasSessionToken reports whether the credentials file carries an
+// aws_session_token for the named profile — the on-disk marker of temporary
+// credentials. Missing file, section, or key all mean false. The token value
+// never leaves this function.
+func HasSessionToken(p Paths, name string) bool {
+	creds, err := loadINI(p.Credentials)
+	if err != nil {
+		return false
+	}
+	sec, err := creds.GetSection(name)
+	if err != nil {
+		return false
+	}
+	return sec.Key("aws_session_token").String() != ""
+}
+
 // Find returns the profile with the given name, or false if absent.
 func Find(list []Profile, name string) (Profile, bool) {
 	for _, p := range list {
