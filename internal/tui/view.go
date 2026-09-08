@@ -57,12 +57,14 @@ func (m *model) View() string {
 	for row, idx := range m.filtered {
 		p := m.profiles[idx]
 		cursor := "  "
-		nameRender := p.Name
+		// Pad before styling: lipgloss adds ANSI escapes that fmt's %-22s
+		// would count as width, breaking column alignment on the cursor row.
+		nameRender := fmt.Sprintf("%-22s", p.Name)
 		if row == m.cursor {
 			cursor = cursorStyle.Render("▸ ")
-			nameRender = selectedStyle.Render(p.Name)
+			nameRender = selectedStyle.Render(nameRender)
 		}
-		line := fmt.Sprintf("%s%-22s %-6s %-12s %s",
+		line := fmt.Sprintf("%s%s %-6s %-12s %s",
 			cursor,
 			nameRender,
 			string(p.Type),

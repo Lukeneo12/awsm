@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -13,6 +14,8 @@ import (
 	"github.com/Lukeneo12/awsm/internal/runner"
 	"github.com/Lukeneo12/awsm/internal/status"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func sampleProfiles() []profiles.Profile {
@@ -128,6 +131,44 @@ func TestView_renders_all_badge_states(t *testing.T) {
 			t.Errorf("View missing %q", want)
 		}
 	}
+}
+
+// TestView_cursor_row_stays_aligned guards against ANSI escapes breaking
+// column widths: the selected name is styled, and styling before padding
+// makes fmt count invisible escape bytes toward %-22s. Color output must be
+// forced on — tests run without a TTY, where lipgloss emits no escapes and
+// the bug is invisible.
+func TestView_cursor_row_stays_aligned(t *testing.T) {
+	old := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(old)
+
+	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m.cursor = 1 // beta (manual)
+
+	found := 0
+	for _, line := range strings.Split(stripANSI(m.View()), "\n") {
+		for _, p := range sampleProfiles() {
+			idx := strings.Index(line, p.Name)
+			if idx < 0 {
+				continue
+			}
+			found++
+			want := fmt.Sprintf("%-22s %-6s", p.Name, string(p.Type))
+			if !strings.HasPrefix(line[idx:], want) {
+				t.Errorf("row misaligned: %q should start with %q at name", line, want)
+			}
+		}
+	}
+	if found != 3 {
+		t.Fatalf("expected 3 profile rows, found %d", found)
+	}
+}
+
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(s string) string {
+	return ansiRe.ReplaceAllString(s, "")
 }
 
 func contains(haystack, needle string) bool {
