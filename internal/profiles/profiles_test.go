@@ -95,6 +95,30 @@ func TestFind(t *testing.T) {
 	}
 }
 
+func TestHasSessionToken_should_detect_temporary_credentials(t *testing.T) {
+	paths := testPaths()
+	cases := []struct {
+		profile string
+		want    bool
+	}{
+		{"base-saml", true},      // temporary creds: has aws_session_token
+		{"static-keys", false},   // long-term AKIA keys, no token
+		{"missing-entry", false}, // no credentials section at all
+	}
+	for _, tc := range cases {
+		if got := HasSessionToken(paths, tc.profile); got != tc.want {
+			t.Errorf("HasSessionToken(%q): got %v want %v", tc.profile, got, tc.want)
+		}
+	}
+}
+
+func TestHasSessionToken_should_be_false_when_file_missing(t *testing.T) {
+	paths := Paths{Credentials: "does-not-exist-credentials"}
+	if HasSessionToken(paths, "any") {
+		t.Error("missing credentials file should mean no session token")
+	}
+}
+
 func TestMaskKey(t *testing.T) {
 	cases := map[string]string{
 		"AKIAEXAMPLE000001234": "****1234",

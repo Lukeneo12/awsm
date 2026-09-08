@@ -31,7 +31,7 @@ func (a *app) statusCmd() *cobra.Command {
 				list = []profiles.Profile{p}
 			}
 
-			checker := status.NewChecker(a.runner)
+			checker := status.NewChecker(a.runner, a.paths)
 			results := checker.CheckAll(cmd.Context(), list)
 
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)

@@ -2,6 +2,7 @@ package status
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/Lukeneo12/awsm/internal/profiles"
@@ -14,7 +15,7 @@ func TestCheck_should_report_active_when_sts_succeeds(t *testing.T) {
 	f.Responses["aws sts get-caller-identity --profile good"] = runner.Result{
 		Stdout: []byte(`{"Account":"123456789012","Arn":"arn:aws:iam::123456789012:user/x","UserId":"AIDA"}`),
 	}
-	c := NewChecker(f)
+	c := NewChecker(f, profiles.Paths{})
 
 	// Act
 	st := c.Check(context.Background(), profiles.Profile{Name: "good"})
@@ -34,7 +35,7 @@ func TestCheck_should_report_expired_when_token_expired(t *testing.T) {
 		ExitCode: 255,
 		Stderr:   []byte("Error loading SSO Token: Token has expired and refresh failed"),
 	}
-	c := NewChecker(f)
+	c := NewChecker(f, profiles.Paths{})
 
 	st := c.Check(context.Background(), profiles.Profile{Name: "sso"})
 
@@ -49,9 +50,63 @@ func TestCheck_should_report_invalid_on_other_failure(t *testing.T) {
 		ExitCode: 254,
 		Stderr:   []byte("An error occurred (SignatureDoesNotMatch)"),
 	}
-	c := NewChecker(f)
+	c := NewChecker(f, profiles.Paths{})
 
 	st := c.Check(context.Background(), profiles.Profile{Name: "bad"})
+
+	if st.State != StateInvalid {
+		t.Fatalf("state: got %q want invalid", st.State)
+	}
+}
+
+// invalidClientTokenStderr is the verbatim AWS CLI error for a security token
+// STS no longer recognizes — what a long-expired temporary session gets,
+// instead of ExpiredToken.
+const invalidClientTokenStderr = "aws: [ERROR]: An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation: The security token included in the request is invalid"
+
+func TestCheck_should_classify_unrecognized_token_by_credential_shape(t *testing.T) {
+	// Arrange: the session-token lookup reads the shared fixture, where
+	// base-saml holds temporary creds (session token) and static-keys holds
+	// long-term keys; missing-entry has no credentials section at all.
+	fixturePaths := profiles.Paths{
+		Credentials: filepath.Join("..", "..", "testdata", "credentials"),
+	}
+	cases := []struct {
+		name    string
+		profile string
+		want    State
+	}{
+		{"expired_when_session_token_present", "base-saml", StateExpired},
+		{"invalid_when_longterm_keys", "static-keys", StateInvalid},
+		{"invalid_when_no_credentials_entry", "missing-entry", StateInvalid},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := runner.NewFake()
+			f.DefaultResult = runner.Result{
+				ExitCode: 254,
+				Stderr:   []byte(invalidClientTokenStderr),
+			}
+			c := NewChecker(f, fixturePaths)
+
+			// Act
+			st := c.Check(context.Background(), profiles.Profile{Name: tc.profile})
+
+			// Assert
+			if st.State != tc.want {
+				t.Fatalf("state: got %q want %q", st.State, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheck_should_report_invalid_when_session_token_lookup_is_nil(t *testing.T) {
+	f := runner.NewFake()
+	f.DefaultResult = runner.Result{ExitCode: 254, Stderr: []byte(invalidClientTokenStderr)}
+	c := NewChecker(f, profiles.Paths{})
+	c.HasSessionToken = nil
+
+	st := c.Check(context.Background(), profiles.Profile{Name: "any"})
 
 	if st.State != StateInvalid {
 		t.Fatalf("state: got %q want invalid", st.State)
@@ -61,7 +116,7 @@ func TestCheck_should_report_invalid_on_other_failure(t *testing.T) {
 func TestCheck_should_report_invalid_when_binary_missing(t *testing.T) {
 	f := runner.NewFake()
 	f.DefaultResult = runner.Result{Err: context.Canceled, ExitCode: -1}
-	c := NewChecker(f)
+	c := NewChecker(f, profiles.Paths{})
 
 	st := c.Check(context.Background(), profiles.Profile{Name: "any"})
 
@@ -79,7 +134,7 @@ func TestCheckAll_should_check_every_profile(t *testing.T) {
 	f.Responses["aws sts get-caller-identity --profile b"] = runner.Result{
 		ExitCode: 1, Stderr: []byte("Unable to locate credentials"),
 	}
-	c := NewChecker(f)
+	c := NewChecker(f, profiles.Paths{})
 	list := []profiles.Profile{{Name: "a"}, {Name: "b"}}
 
 	// Act

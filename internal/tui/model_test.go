@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -13,6 +14,8 @@ import (
 	"github.com/Lukeneo12/awsm/internal/runner"
 	"github.com/Lukeneo12/awsm/internal/status"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func sampleProfiles() []profiles.Profile {
@@ -24,7 +27,7 @@ func sampleProfiles() []profiles.Profile {
 }
 
 func TestUpdate_status_msg_updates_row(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.checking = 3
 
 	_, _ = m.Update(statusMsg{Profile: "beta", State: status.StateActive, AccountID: "999"})
@@ -38,7 +41,7 @@ func TestUpdate_status_msg_updates_row(t *testing.T) {
 }
 
 func TestUpdate_navigation_wraps(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	if m.cursor != 0 {
 		t.Fatalf("cursor should start at 0")
 	}
@@ -53,7 +56,7 @@ func TestUpdate_navigation_wraps(t *testing.T) {
 }
 
 func TestApplyFilter_narrows_list(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.filter = "amm" // matches "gamma"
 	m.applyFilter()
 	if len(m.filtered) != 1 {
@@ -67,7 +70,7 @@ func TestApplyFilter_narrows_list(t *testing.T) {
 func TestDoSwitch_writes_switch_file(t *testing.T) {
 	dir := t.TempDir()
 	sf := filepath.Join(dir, "switch")
-	m := newModel(runner.NewFake(), sampleProfiles(), sf)
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), sf)
 	m.cursor = 1 // beta
 
 	_, cmd := m.doSwitch()
@@ -89,7 +92,7 @@ func TestDoSwitch_writes_switch_file(t *testing.T) {
 }
 
 func TestDoSwitch_without_wrapper_shows_hint(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	_, cmd := m.doSwitch()
 	if cmd != nil {
 		t.Error("expected no quit when wrapper missing")
@@ -100,7 +103,7 @@ func TestDoSwitch_without_wrapper_shows_hint(t *testing.T) {
 }
 
 func TestDoLogin_noop_for_keys(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.cursor = 1 // beta (keys)
 	_, cmd := m.doLogin()
 	if cmd != nil {
@@ -109,14 +112,14 @@ func TestDoLogin_noop_for_keys(t *testing.T) {
 }
 
 func TestView_renders_without_panic(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	if out := m.View(); out == "" {
 		t.Error("View returned empty string")
 	}
 }
 
 func TestView_renders_all_badge_states(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.statuses["alpha"] = status.Status{Profile: "alpha", State: status.StateActive, AccountID: "111111111111"}
 	m.statuses["beta"] = status.Status{Profile: "beta", State: status.StateExpired}
 	m.statuses["gamma"] = status.Status{Profile: "gamma", State: status.StateInvalid}
@@ -128,6 +131,44 @@ func TestView_renders_all_badge_states(t *testing.T) {
 			t.Errorf("View missing %q", want)
 		}
 	}
+}
+
+// TestView_cursor_row_stays_aligned guards against ANSI escapes breaking
+// column widths: the selected name is styled, and styling before padding
+// makes fmt count invisible escape bytes toward %-22s. Color output must be
+// forced on — tests run without a TTY, where lipgloss emits no escapes and
+// the bug is invisible.
+func TestView_cursor_row_stays_aligned(t *testing.T) {
+	old := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(old)
+
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
+	m.cursor = 1 // beta (manual)
+
+	found := 0
+	for _, line := range strings.Split(stripANSI(m.View()), "\n") {
+		for _, p := range sampleProfiles() {
+			idx := strings.Index(line, p.Name)
+			if idx < 0 {
+				continue
+			}
+			found++
+			want := fmt.Sprintf("%-22s %-6s", p.Name, string(p.Type))
+			if !strings.HasPrefix(line[idx:], want) {
+				t.Errorf("row misaligned: %q should start with %q at name", line, want)
+			}
+		}
+	}
+	if found != 3 {
+		t.Fatalf("expected 3 profile rows, found %d", found)
+	}
+}
+
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(s string) string {
+	return ansiRe.ReplaceAllString(s, "")
 }
 
 func contains(haystack, needle string) bool {
@@ -157,7 +198,7 @@ func key(s string) tea.KeyMsg {
 }
 
 func TestUpdate_q_quits(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	_, cmd := m.Update(key("q"))
 	if cmd == nil {
 		t.Fatal("expected quit command")
@@ -168,7 +209,7 @@ func TestUpdate_q_quits(t *testing.T) {
 }
 
 func TestUpdate_r_refreshes(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	_, cmd := m.Update(key("r"))
 	if cmd == nil {
 		t.Error("expected a refresh command")
@@ -179,7 +220,7 @@ func TestUpdate_r_refreshes(t *testing.T) {
 }
 
 func TestUpdate_arrow_navigation(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("down"))
 	if m.cursor != 1 {
 		t.Errorf("cursor after down: got %d want 1", m.cursor)
@@ -191,7 +232,7 @@ func TestUpdate_arrow_navigation(t *testing.T) {
 }
 
 func TestUpdate_slash_enters_filter_then_types(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("/"))
 	m.Update(key("b")) // should filter, matching "beta"
 	if len(m.filtered) != 1 {
@@ -208,7 +249,7 @@ func TestUpdate_slash_enters_filter_then_types(t *testing.T) {
 }
 
 func TestDoLogin_returns_exec_for_sso(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.cursor = 0 // alpha (sso)
 	_, cmd := m.doLogin()
 	if cmd == nil {
@@ -221,7 +262,7 @@ func TestDoLogin_resolves_role_source(t *testing.T) {
 		{Name: "prod", Type: profiles.TypeRole, SourceProfile: "base"},
 		{Name: "base", Type: profiles.TypeSAML, SAMLAccount: "default"},
 	}
-	m := newModel(runner.NewFake(), list, "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, list, "")
 	m.cursor = 0 // prod (role -> base saml)
 	_, cmd := m.doLogin()
 	if cmd == nil {
@@ -230,7 +271,7 @@ func TestDoLogin_resolves_role_source(t *testing.T) {
 }
 
 func TestFilter_enter_keeps_filter(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("/"))
 	m.Update(key("a")) // matches alpha, beta, gamma
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -240,7 +281,7 @@ func TestFilter_enter_keeps_filter(t *testing.T) {
 }
 
 func TestUpdate_a_opens_type_menu(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	_, cmd := m.Update(key("a"))
 	if m.loadStep != loadType {
 		t.Fatalf("expected loadType after 'a', got %v", m.loadStep)
@@ -251,7 +292,7 @@ func TestUpdate_a_opens_type_menu(t *testing.T) {
 }
 
 func TestAddType_manual_goes_to_name_step(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("a"))                       // type menu
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // cursor at 0 = manual
 	if m.loadStep != loadName {
@@ -260,7 +301,7 @@ func TestAddType_manual_goes_to_name_step(t *testing.T) {
 }
 
 func TestAddType_nonmanual_suspends_to_wizard(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("a"))           // type menu
 	_, cmd := m.Update(key("2")) // sso -> CLI wizard
 	if cmd == nil {
@@ -274,7 +315,7 @@ func TestAddType_nonmanual_suspends_to_wizard(t *testing.T) {
 func TestAddType_1to4_shortcuts_select_each_type(t *testing.T) {
 	types := addableTypes()
 	for i, want := range types {
-		m := newModel(runner.NewFake(), sampleProfiles(), "")
+		m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 		m.Update(key("a"))
 		shortcut := string(rune('1' + i))
 		_, cmd := m.Update(key(shortcut))
@@ -291,7 +332,7 @@ func TestAddType_1to4_shortcuts_select_each_type(t *testing.T) {
 }
 
 func TestAddType_navigates_with_arrows_and_wraps(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("a"))
 	m.Update(key("down"))
 	if m.typeCursor != 1 {
@@ -305,7 +346,7 @@ func TestAddType_navigates_with_arrows_and_wraps(t *testing.T) {
 }
 
 func TestAddType_esc_cancels_back_to_list(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("a"))
 	m.Update(key("down"))
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -319,7 +360,7 @@ func TestAddType_esc_cancels_back_to_list(t *testing.T) {
 
 func TestAdd_name_then_paste_creates_manual_profile(t *testing.T) {
 	dir := t.TempDir()
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.paths = profiles.Paths{
 		Credentials: filepath.Join(dir, "credentials"),
 		Config:      filepath.Join(dir, "config"),
@@ -366,7 +407,7 @@ func TestAdd_name_then_paste_creates_manual_profile(t *testing.T) {
 }
 
 func TestAdd_name_rejects_empty_name(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("a"))                       // type menu
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // manual -> name step
 
@@ -381,7 +422,7 @@ func TestAdd_name_rejects_empty_name(t *testing.T) {
 }
 
 func TestAdd_name_rejects_duplicate_name(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("a"))                       // type menu
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // manual -> name step
 
@@ -399,7 +440,7 @@ func TestAdd_name_rejects_duplicate_name(t *testing.T) {
 }
 
 func TestAdd_name_backspace_edits_buffer(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("a"))
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m.Update(key("d"))
@@ -411,7 +452,7 @@ func TestAdd_name_backspace_edits_buffer(t *testing.T) {
 }
 
 func TestAdd_name_esc_cancels(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("a"))                       // type menu
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // manual -> name step
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})   // cancel from name step
@@ -424,7 +465,7 @@ func TestAdd_name_esc_cancels(t *testing.T) {
 }
 
 func TestView_renders_add_type_and_name_steps(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 
 	m.loadStep = loadType
 	if out := m.View(); !contains(out, "manual") || !contains(out, "sso") {
@@ -440,7 +481,7 @@ func TestView_renders_add_type_and_name_steps(t *testing.T) {
 
 // 'd' during the type menu must be ignored, not start a delete.
 func TestUpdate_d_during_type_menu_is_ignored(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("a"))
 	m.Update(key("d"))
 	if m.deleteTarget != "" {
@@ -454,7 +495,7 @@ func TestUpdate_d_during_type_menu_is_ignored(t *testing.T) {
 // 'd' during the name step must be typed into the name buffer, not start a
 // delete.
 func TestUpdate_d_during_name_step_is_typed_not_delete(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("a"))
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // manual -> name step
 
@@ -472,7 +513,7 @@ func TestUpdate_d_during_name_step_is_typed_not_delete(t *testing.T) {
 }
 
 func TestUpdate_t_launches_settype(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.cursor = 1 // beta
 	_, cmd := m.Update(key("t"))
 	if cmd == nil {
@@ -481,7 +522,7 @@ func TestUpdate_t_launches_settype(t *testing.T) {
 }
 
 func TestUpdate_l_opens_paste(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.cursor = 1 // beta
 	m.Update(key("l"))
 	if m.loadStep != loadPaste {
@@ -494,7 +535,7 @@ func TestUpdate_l_opens_paste(t *testing.T) {
 
 func TestLoad_paste_preview_then_confirm(t *testing.T) {
 	dir := t.TempDir()
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.paths = profiles.Paths{
 		Credentials: filepath.Join(dir, "credentials"),
 		Config:      filepath.Join(dir, "config"),
@@ -531,7 +572,7 @@ func TestLoad_paste_preview_then_confirm(t *testing.T) {
 }
 
 func TestLoad_bad_paste_stays_in_paste(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.cursor = 1
 	m.Update(key("l"))
 	m.ta.SetValue("this is not credentials")
@@ -545,7 +586,7 @@ func TestLoad_bad_paste_stays_in_paste(t *testing.T) {
 }
 
 func TestLoad_esc_cancels_paste(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.cursor = 1
 	m.Update(key("l"))
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -563,7 +604,7 @@ func TestReload_refreshes_from_paths(t *testing.T) {
 	if err := profiles.SetOverride(ovPath, "newone", profiles.Override{Type: profiles.TypeManual}); err != nil {
 		t.Fatal(err)
 	}
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.paths = profiles.Paths{Overrides: ovPath}
 
 	if cmd := m.reload(); cmd == nil {
@@ -596,7 +637,7 @@ func seedManualProfile(t *testing.T, paths profiles.Paths, name string) {
 }
 
 func TestUpdate_d_shows_delete_confirm(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.cursor = 1 // beta
 	m.Update(key("d"))
 	if m.deleteTarget != "beta" {
@@ -608,7 +649,7 @@ func TestUpdate_d_shows_delete_confirm(t *testing.T) {
 }
 
 func TestUpdate_d_on_empty_list_is_noop(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.filter = "zzz-no-match"
 	m.applyFilter()
 	if len(m.filtered) != 0 {
@@ -629,7 +670,7 @@ func TestDeleteConfirm_y_removes_profile_and_reloads(t *testing.T) {
 	seedManualProfile(t, paths, "beta")
 	seedManualProfile(t, paths, "alpha") // survives, so reload has something to check
 
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.paths = paths
 	m.deleteTarget = "beta"
 
@@ -675,7 +716,7 @@ func TestDeleteConfirm_y_keeps_credentials_file_mode_0600(t *testing.T) {
 	paths := newDeletePaths(dir)
 	seedManualProfile(t, paths, "beta")
 
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.paths = paths
 	m.deleteTarget = "beta"
 	m.Update(key("y"))
@@ -694,7 +735,7 @@ func TestDeleteConfirm_n_cancels_without_deleting(t *testing.T) {
 	paths := newDeletePaths(dir)
 	seedManualProfile(t, paths, "beta")
 
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.paths = paths
 	m.deleteTarget = "beta"
 
@@ -719,7 +760,7 @@ func TestDeleteConfirm_esc_cancels_without_deleting(t *testing.T) {
 	paths := newDeletePaths(dir)
 	seedManualProfile(t, paths, "beta")
 
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.paths = paths
 	m.deleteTarget = "beta"
 
@@ -734,7 +775,7 @@ func TestDeleteConfirm_esc_cancels_without_deleting(t *testing.T) {
 }
 
 func TestDeleteConfirm_other_key_cancels(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.deleteTarget = "beta"
 	m.Update(key("x"))
 	if m.deleteTarget != "" {
@@ -754,7 +795,7 @@ func TestDeleteConfirm_error_shows_message_and_keeps_running(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.paths = paths
 	m.deleteTarget = "beta"
 
@@ -779,7 +820,7 @@ func TestDeleteConfirm_error_shows_message_and_keeps_running(t *testing.T) {
 }
 
 func TestView_footer_advertises_delete(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	if !contains(m.View(), "d delete") {
 		t.Error("expected the footer to mention 'd delete'")
 	}
@@ -788,7 +829,7 @@ func TestView_footer_advertises_delete(t *testing.T) {
 // AC1 also requires the prompt to display the profile's detected type, not
 // just its name.
 func TestUpdate_d_shows_delete_confirm_with_type(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.cursor = 1 // beta, TypeManual
 	m.Update(key("d"))
 	out := m.View()
@@ -804,7 +845,7 @@ func TestUpdate_d_shows_delete_confirm_with_type(t *testing.T) {
 // pending, navigation keys must not move the cursor; any non-y/Y key cancels
 // the pending delete instead of falling through to handleKey.
 func TestDeleteConfirm_suspends_list_navigation_keys(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.cursor = 0
 	m.deleteTarget = "beta"
 
@@ -825,7 +866,7 @@ func TestDeleteConfirm_uppercase_Y_also_confirms(t *testing.T) {
 	seedManualProfile(t, paths, "beta")
 	seedManualProfile(t, paths, "alpha") // survives, so reload's checkAllCmd is non-nil
 
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.paths = paths
 	m.deleteTarget = "beta"
 
@@ -844,7 +885,7 @@ func TestDeleteConfirm_uppercase_Y_also_confirms(t *testing.T) {
 // AC3: cancelling must actually return to the list view (not leave the
 // confirm screen rendering).
 func TestDeleteConfirm_cancel_returns_to_list_view(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.deleteTarget = "beta"
 
 	m.Update(key("n"))
@@ -865,7 +906,7 @@ func TestDeleteConfirm_cancel_returns_to_list_view(t *testing.T) {
 // composing a filter query; the user must commit the filter (enter/esc) first
 // and press 'd' again.
 func TestUpdate_d_while_filter_active_is_swallowed_by_filter_text(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("/"))
 	m.Update(key("b")) // filter now "b", matches "beta"
 
@@ -886,7 +927,7 @@ func TestUpdate_d_while_filter_active_is_swallowed_by_filter_text(t *testing.T) 
 // treated as a literal character typed into the textarea, not a delete
 // trigger.
 func TestUpdate_d_during_load_paste_is_typed_not_delete(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.cursor = 1 // beta
 	m.Update(key("l"))
 	if m.loadStep != loadPaste {
@@ -910,7 +951,7 @@ func TestUpdate_d_during_load_paste_is_typed_not_delete(t *testing.T) {
 // — is treated as "cancel the load", per handleConfirmKey's default branch.
 // It must not leak into starting a delete.
 func TestUpdate_d_during_load_confirm_cancels_load_not_delete(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.cursor = 1 // beta
 	m.Update(key("l"))
 	m.ta.SetValue("export AWS_ACCESS_KEY_ID=ASIACLIP0002\nexport AWS_SECRET_ACCESS_KEY=sec\n")
@@ -939,7 +980,7 @@ func TestDeleteConfirm_y_on_sole_profile_clamps_cursor(t *testing.T) {
 	paths := newDeletePaths(dir)
 	seedManualProfile(t, paths, "solo")
 
-	m := newModel(runner.NewFake(), []profiles.Profile{{Name: "solo", Type: profiles.TypeManual}}, "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, []profiles.Profile{{Name: "solo", Type: profiles.TypeManual}}, "")
 	m.paths = paths
 	m.deleteTarget = "solo"
 
@@ -969,7 +1010,7 @@ func TestDeleteConfirm_y_on_sole_profile_clamps_cursor(t *testing.T) {
 // delete target (e.g. it was removed by a concurrent reload triggered by
 // another message), the confirm screen must still render without panicking.
 func TestDeleteConfirmView_renders_when_profile_missing_from_list(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.deleteTarget = "ghost-profile-not-in-list"
 
 	out := m.View()
@@ -999,7 +1040,7 @@ func TestDeleteConfirm_y_config_removal_failure_surfaces_error_and_reloads(t *te
 		t.Fatalf("setup chmod: %v", err)
 	}
 
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.paths = paths
 	m.deleteTarget = "beta"
 
@@ -1054,7 +1095,7 @@ func TestDeleteConfirm_y_override_removal_failure_still_reloads_list(t *testing.
 		t.Fatalf("setup chmod: %v", err)
 	}
 
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.paths = paths
 	m.deleteTarget = "beta"
 
@@ -1089,7 +1130,7 @@ func TestDeleteConfirm_y_override_removal_failure_still_reloads_list(t *testing.
 // does open the type menu -- but the first 'a' is "spent" cancelling delete,
 // not starting add.
 func TestUpdate_a_during_delete_confirm_cancels_delete_not_add(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.cursor = 1 // beta
 	m.deleteTarget = "beta"
 
@@ -1116,7 +1157,7 @@ func TestUpdate_a_during_delete_confirm_cancels_delete_not_add(t *testing.T) {
 // The type menu's typeCursor is reset to 0 after a cancel, so a later 'a'
 // doesn't reopen the menu pre-scrolled to wherever the user left it.
 func TestAddType_typeCursor_resets_after_cancel(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("a"))
 	m.Update(key("down"))
 	m.Update(key("down"))
@@ -1136,7 +1177,7 @@ func TestAddType_typeCursor_resets_after_cancel(t *testing.T) {
 // affects what's shown, so a name hidden by an active filter must still be
 // rejected as a duplicate.
 func TestAdd_name_rejects_duplicate_against_full_list_not_filtered_view(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	// Filter down to something that does NOT match "beta", so beta is hidden
 	// from the visible list but still exists in m.profiles.
 	m.filter = "alpha"
@@ -1168,7 +1209,7 @@ func TestAdd_name_with_space_and_slash_round_trips(t *testing.T) {
 	for _, name := range []string{"my profile", "team/dev"} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			m := newModel(runner.NewFake(), sampleProfiles(), "")
+			m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 			m.paths = profiles.Paths{
 				Credentials: filepath.Join(dir, "credentials"),
 				Config:      filepath.Join(dir, "config"),
@@ -1203,7 +1244,7 @@ func TestAdd_name_with_space_and_slash_round_trips(t *testing.T) {
 // via View() by the other tests, which drive the flow through Update without
 // checking the screen text at that step.
 func TestView_paste_step_renders_pasteView(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.loadStep = loadPaste
 	m.loadProfile = "delta"
 	m.message = "some validation hint"
@@ -1222,7 +1263,7 @@ func TestView_paste_step_renders_pasteView(t *testing.T) {
 // Coverage gap: nameView's message branch (validation hints) was only
 // asserted against m.message directly, never against the rendered view.
 func TestView_name_step_renders_validation_message(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.loadStep = loadName
 	m.nameInput = "beta"
 	m.message = "ya existe un profile llamado beta"
@@ -1236,7 +1277,7 @@ func TestView_name_step_renders_validation_message(t *testing.T) {
 // exercised via doLoad but never asserted on directly; the other direct
 // confirmView test only covers the no-token ("no") branch.
 func TestView_confirm_step_shows_temporary_when_session_token_present(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.loadStep = loadConfirm
 	m.loadProfile = "delta"
 	m.loadParsed = creds.Parsed{AccessKeyID: "ASIA0001", SecretAccessKey: "sec", SessionToken: "tok"}
@@ -1249,7 +1290,7 @@ func TestView_confirm_step_shows_temporary_when_session_token_present(t *testing
 // Coverage gap: 't' (set-type) on an empty/filtered-out list must be a
 // no-op, not attempt to launch the CLI wizard against a zero-value profile.
 func TestUpdate_t_on_empty_list_is_noop(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.filter = "zzz-no-match"
 	m.applyFilter()
 
@@ -1262,13 +1303,13 @@ func TestUpdate_t_on_empty_list_is_noop(t *testing.T) {
 // Coverage gap: Update's reloadMsg branch (both the success and failure
 // message formatting) was never exercised directly.
 func TestUpdate_reloadMsg_success_and_failure_messages(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(reloadMsg{action: "add", err: nil})
 	if !contains(m.message, "add") || !contains(m.message, "reloaded") {
 		t.Errorf("expected a success reload message, got %q", m.message)
 	}
 
-	m2 := newModel(runner.NewFake(), sampleProfiles(), "")
+	m2 := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m2.Update(reloadMsg{action: "add --type sso", err: os.ErrPermission})
 	if !contains(m2.message, "add --type sso") || !contains(m2.message, "failed") {
 		t.Errorf("expected a failure reload message, got %q", m2.message)
@@ -1280,7 +1321,7 @@ func TestUpdate_reloadMsg_success_and_failure_messages(t *testing.T) {
 // branch unhandled and must still perform their normal navigation action
 // instead of being silently dropped.
 func TestHandleFilterKey_arrow_keys_still_navigate_while_filtering(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("/"))
 	// No filter text yet, but filter mode is active ("/" seeds a leading
 	// space); typing nothing and pressing down should still move the cursor
@@ -1299,7 +1340,7 @@ func TestHandleFilterKey_arrow_keys_still_navigate_while_filtering(t *testing.T)
 // TestAdd_name_then_paste_creates_manual_profile.
 func TestDoLoad_write_error_surfaces_message_and_does_not_panic(t *testing.T) {
 	dir := t.TempDir()
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	// Credentials path points at a directory, so AddManual's ini write fails.
 	credPath := filepath.Join(dir, "credentials")
 	if err := os.Mkdir(credPath, 0o755); err != nil {
@@ -1328,7 +1369,7 @@ func TestDoLoad_write_error_surfaces_message_and_does_not_panic(t *testing.T) {
 }
 
 func TestUpdate_loginDone_triggers_recheck(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	_, cmd := m.Update(loginDoneMsg{profile: "alpha", err: nil})
 	if cmd == nil {
 		t.Error("expected a recheck command after login")
@@ -1341,7 +1382,7 @@ func TestUpdate_loginDone_triggers_recheck(t *testing.T) {
 // Multi-byte runes (ñ, á, …) count as one character for the name buffer, and
 // backspace removes the whole rune, never leaving a broken UTF-8 tail.
 func TestAdd_name_accepts_multibyte_runes_and_backspace_removes_whole_rune(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.loadStep = loadName
 
 	m.Update(key("a"))
@@ -1358,7 +1399,7 @@ func TestAdd_name_accepts_multibyte_runes_and_backspace_removes_whole_rune(t *te
 
 // The filter shares the rune-aware input handling.
 func TestFilter_accepts_multibyte_runes(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.Update(key("/"))
 	m.Update(key("ñ"))
 	if !contains(m.filter, "ñ") {
@@ -1372,7 +1413,7 @@ func TestFilter_accepts_multibyte_runes(t *testing.T) {
 
 // The digit-shortcut range and the menu hint both follow len(addableTypes()).
 func TestAddType_shortcuts_and_hint_follow_type_count(t *testing.T) {
-	m := newModel(runner.NewFake(), sampleProfiles(), "")
+	m := newModel(runner.NewFake(), profiles.Paths{}, sampleProfiles(), "")
 	m.loadStep = loadType
 
 	n := len(addableTypes())

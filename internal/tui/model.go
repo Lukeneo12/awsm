@@ -45,8 +45,7 @@ func addableTypes() []profiles.Type {
 // reads after exit to apply the chosen profile. paths lets the TUI reload the
 // profile list after an add/set-type runs.
 func Run(r runner.CommandRunner, paths profiles.Paths, list []profiles.Profile, switchFile string) error {
-	m := newModel(r, list, switchFile)
-	m.paths = paths
+	m := newModel(r, paths, list, switchFile)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
@@ -79,7 +78,7 @@ type model struct {
 	deleteTarget string
 }
 
-func newModel(r runner.CommandRunner, list []profiles.Profile, switchFile string) *model {
+func newModel(r runner.CommandRunner, paths profiles.Paths, list []profiles.Profile, switchFile string) *model {
 	ta := textarea.New()
 	ta.Placeholder = "pegá acá el bloque de credenciales (export.../[perfil].../$env:...)"
 	ta.ShowLineNumbers = false
@@ -88,7 +87,8 @@ func newModel(r runner.CommandRunner, list []profiles.Profile, switchFile string
 
 	m := &model{
 		runner:     r,
-		checker:    status.NewChecker(r),
+		paths:      paths,
+		checker:    status.NewChecker(r, paths),
 		authn:      auth.New(r),
 		profiles:   list,
 		statuses:   map[string]status.Status{},
